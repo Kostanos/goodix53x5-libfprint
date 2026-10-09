@@ -291,7 +291,8 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
       goodix_scan_request_stop (data, error);
       return;
     }
-  if (goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->channel_restart_disarms)
+  if (goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->channel_restart_disarms &&
+      !data->stop_requested)
     {
       data->dispatching = TRUE;
       fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_CHANNEL_REARM);

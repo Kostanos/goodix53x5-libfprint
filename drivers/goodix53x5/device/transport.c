@@ -1174,6 +1174,9 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
        * Never disguise a physical failure as sender timeout/retry. */
       reader->error = error;
       self->needs_reinit = TRUE;
+      /* The lost transfer leaves no way to find the next pack header. */
+      if (self->pack_rx)
+        g_byte_array_set_size (self->pack_rx, 0);
       if (operation != &idle)
         goodix_transport_complete (operation, g_error_copy (error));
       return;

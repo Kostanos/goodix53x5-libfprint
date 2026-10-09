@@ -76,7 +76,7 @@ goodix_tls_new (const guint8 *psk, gsize psk_len, GError **error)
       goodix_tls_free (tls);
       return NULL;
     }
-  SSL_CTX_set_options (tls->ctx, SSL_OP_NO_TICKET);
+  SSL_CTX_set_options (tls->ctx, SSL_OP_NO_TICKET | SSL_OP_NO_RENEGOTIATION);
   SSL_CTX_set_psk_server_callback (tls->ctx, goodix_tls_psk_cb);
 
   tls->ssl = SSL_new (tls->ctx);
@@ -157,33 +157,52 @@ goodix_tls_established (GoodixTls *tls)
   return SSL_is_init_finished (tls->ssl);
 }
 
+/* Checks whether OpenSSL holds part of a record it has not decrypted yet. */
+static gboolean
+goodix_tls_has_partial_record (GoodixTls *tls)
+{
+  return SSL_has_pending (tls->ssl) || BIO_ctrl_pending (tls->in);
+}
+
 guint8 *
 goodix_tls_decrypt (GoodixTls    *tls,
                     const guint8 *records,
                     gsize         records_len,
                     gsize        *out_len)
 {
-  g_autoptr(GByteArray) plain = g_byte_array_new ();
+  GByteArray *plain = g_byte_array_new ();
   guint8 buf[16 * 1024];
-  int ret;
+  gboolean ok;
+  int ret = 0;
 
-  if (BIO_write (tls->in, records, records_len) != (int) records_len)
-    {
-      ERR_clear_error ();
-      return NULL;
-    }
-
-  while ((ret = SSL_read (tls->ssl, buf, sizeof (buf))) > 0)
+  ok = BIO_write (tls->in, records, records_len) == (int) records_len;
+  while (ok && (ret = SSL_read (tls->ssl, buf, sizeof (buf))) > 0)
     g_byte_array_append (plain, buf, ret);
-
-  if (SSL_get_error (tls->ssl, ret) != SSL_ERROR_WANT_READ || !plain->len)
-    {
-      fp_warn ("TLS record did not authenticate");
-      ERR_clear_error ();
-      return NULL;
-    }
   OPENSSL_cleanse (buf, sizeof (buf));
 
+  if (ok && SSL_get_error (tls->ssl, ret) != SSL_ERROR_WANT_READ)
+    {
+      fp_warn ("TLS record did not authenticate");
+      ok = FALSE;
+    }
+  else if (ok && goodix_tls_has_partial_record (tls))
+    {
+      fp_warn ("TLS record is incomplete");
+      ok = FALSE;
+    }
+  else if (ok && !plain->len)
+    {
+      fp_warn ("TLS records carried no data");
+      ok = FALSE;
+    }
+  ERR_clear_error ();
+  if (!ok)
+    {
+      OPENSSL_cleanse (plain->data, plain->len);
+      g_byte_array_free (plain, TRUE);
+      return NULL;
+    }
+
   *out_len = plain->len;
-  return g_byte_array_free (g_steal_pointer (&plain), FALSE);
+  return g_byte_array_free (plain, FALSE);
 }

@@ -29,6 +29,14 @@ test_action_cancellable (FpDevice *dev)
 FpDevice *
 fixture_device_new (void)
 {
+  return fixture_device_new_variant (0);
+}
+
+/* Returns a device whose variant is selected by @driver_data, as its id-table
+ * entry would. */
+FpDevice *
+fixture_device_new_variant (guint64 driver_data)
+{
   FpDeviceClass *klass = g_type_class_ref (FPI_TYPE_DEVICE_GOODIX53X5);
   FpDevice *dev;
 
@@ -39,7 +47,7 @@ fixture_device_new (void)
   test_clock_us = G_USEC_PER_SEC;
   action_cancel_token = g_cancellable_new ();
   klass->type = FP_DEVICE_TYPE_VIRTUAL;
-  dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+  dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, "fpi-driver-data", driver_data, NULL);
   /* Existing command/coordinator fixtures enter with a constructed HAL. */
   goodix_health_reset (&FPI_DEVICE_GOODIX53X5 (dev)->health);
   g_type_class_unref (klass);

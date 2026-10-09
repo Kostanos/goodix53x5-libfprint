@@ -485,6 +485,8 @@ test_idle_failed_open (gconstpointer user_data)
   self->usb_interface_claimed = TRUE;
   self->open_ref_powered = TRUE;
   self->open_recovery_attempted = !(recover || which == 8);
+  /* A 533c session and its PSK copy must not outlive the failed open. */
+  self->tls = goodix_tls_new (self->psk, GOODIX_PSK_LEN, NULL);
   ssm = fpi_ssm_new_full (dev, idle_open_cleanup_entry, GOODIX_OPEN_NUM_STATES,
                           GOODIX_OPEN_SLEEP, "failed-open-cleanup");
   self->task_ssm = ssm;
@@ -572,6 +574,7 @@ test_idle_failed_open (gconstpointer user_data)
       g_assert_cmpstr (io.error->message, ==, original->message);
     }
   g_assert_cmpuint (io.completions, ==, 1);
+  g_assert_null (self->tls);
   g_assert_cmpuint (idle_open_ssms_freed, ==, 1);
   if (recover)
     g_assert_nonnull (usb.pending);
@@ -584,6 +587,8 @@ test_idle_failed_open (gconstpointer user_data)
     {
       g_assert_nonnull (usb.pending);
       g_assert_true (self->service_active);
+      /* Nor outlive the close. */
+      self->tls = goodix_tls_new (self->psk, GOODIX_PSK_LEN, NULL);
       goodix_close (dev);
       fixture_refresh_wait ();
       g_assert_true (g_cancellable_is_cancelled (usb.cancel));
@@ -595,6 +600,7 @@ test_idle_failed_open (gconstpointer user_data)
       fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
                                               "Joined maintenance at close"));
       g_assert_cmpuint (idle_closes, ==, 1);
+      g_assert_null (self->tls);
     }
   else
     {

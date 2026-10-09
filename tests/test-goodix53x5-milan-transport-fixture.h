@@ -27,6 +27,7 @@ void check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel
 gint64 test_monotonic_time (void);
 GCancellable *test_action_cancellable (FpDevice *dev);
 FpDevice *fixture_device_new (void);
+FpDevice *fixture_device_new_variant (guint64 driver_data);
 void fixture_complete (GError *error);
 void fixture_refresh_wait (void);
 void fixture_select_read (void);

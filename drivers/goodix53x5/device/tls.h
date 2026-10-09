@@ -31,8 +31,9 @@ gboolean   goodix_tls_handshake (GoodixTls    *tls,
                                  GError      **error);
 gboolean   goodix_tls_established (GoodixTls *tls);
 
-/* Returns the plaintext of application-data records, or NULL when they do
- * not authenticate, which leaves the session unusable. */
+/* Returns the plaintext of application-data records, or NULL when one does
+ * not authenticate or the last is incomplete; either leaves the session
+ * unusable. */
 guint8    *goodix_tls_decrypt (GoodixTls    *tls,
                                const guint8 *records,
                                gsize         records_len,

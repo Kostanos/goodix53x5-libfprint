@@ -23,13 +23,19 @@
 #include <string.h>
 
 /* Wrapped framing: [flags(1)][length(2 LE)][sum of the first three(1)]
- * then length bytes. 0xa0 carries one protocol message, 0xb0 a TLS
- * handshake record, 0xb2 a 9-byte header and a TLS application record. */
-#define GOODIX_PACK_HEADER       4
-#define GOODIX_PACK_MESSAGE      0xa0
-#define GOODIX_PACK_TLS          0xb0
-#define GOODIX_PACK_TLS_DATA     0xb2
-#define GOODIX_PACK_TLS_DATA_HDR 9
+ * then length bytes. The high nibble of the flags is the family: 0xa packs
+ * carry one protocol message, 0xb packs TLS records, behind a 9-byte prefix
+ * when flag 0x02 is set (0xb2, image data). */
+#define GOODIX_PACK_HEADER         4
+#define GOODIX_PACK_MESSAGE        0xa0
+#define GOODIX_PACK_TLS            0xb0
+#define GOODIX_PACK_FAMILY_MESSAGE 0xa
+#define GOODIX_PACK_FAMILY_TLS     0xb
+#define GOODIX_PACK_TLS_PREFIXED   0x02
+#define GOODIX_PACK_TLS_DATA_HDR   9
+/* The largest TLS record RFC 5246 allows (2^14 + 2048 bytes and its 5-byte
+ * header) behind the prefix; a longer pack is a misread header. */
+#define GOODIX_PACK_MAX_PAYLOAD    (GOODIX_PACK_TLS_DATA_HDR + 5 + 16384 + 2048)
 
 /* 533c ships with the all-zero PSK; this slot holds its SHA-256. */
 #define GOODIX_WRAPPED_PSK_HASH_TYPE 0xbb020001
@@ -51,15 +57,18 @@ goodix_pack_write_header (guint8 *header, guint8 flags, gsize len)
   header[3] = goodix_pack_checksum (header);
 }
 
-/* Returns the payload length a pack header announces, or FALSE when its
- * checksum does not match. */
+/* Returns the payload length a pack header announces, or FALSE when it is
+ * not a header: an unknown family, a wrong checksum or an impossible length. */
 static gboolean
 goodix_pack_read_header (const guint8 *header, gsize *len)
 {
-  if (goodix_pack_checksum (header) != header[3])
+  guint8 family = header[0] >> 4;
+
+  if ((family != GOODIX_PACK_FAMILY_MESSAGE && family != GOODIX_PACK_FAMILY_TLS) ||
+      goodix_pack_checksum (header) != header[3])
     return FALSE;
   *len = header[1] | (header[2] << 8);
-  return TRUE;
+  return *len <= GOODIX_PACK_MAX_PAYLOAD;
 }
 
 /* Returns @data as one pack of kind @flags, zero-padded to whole 64-byte
@@ -69,8 +78,11 @@ goodix_frame_pack (guint8 flags, const guint8 *data, gsize data_len, gsize *out_
 {
   gsize len = (GOODIX_PACK_HEADER + data_len + GOODIX_USB_CHUNK_SIZE - 1) /
               GOODIX_USB_CHUNK_SIZE * GOODIX_USB_CHUNK_SIZE;
-  guint8 *framed = g_malloc0 (len);
+  guint8 *framed;
 
+  /* Every message and TLS record this driver sends fits the 16-bit length. */
+  g_assert (data_len <= G_MAXUINT16);
+  framed = g_malloc0 (len);
   goodix_pack_write_header (framed, flags, data_len);
   memcpy (framed + GOODIX_PACK_HEADER, data, data_len);
   *out_len = len;
@@ -116,25 +128,19 @@ static void
 goodix_rx_pack (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
                 guint8 flags, const guint8 *payload, gsize len)
 {
-  switch (flags)
+  if (flags >> 4 == GOODIX_PACK_FAMILY_MESSAGE)
     {
-    case GOODIX_PACK_MESSAGE:
       if (len)
         goodix_rx_message (operation, payload, len);
-      break;
-
-    case GOODIX_PACK_TLS:
+    }
+  else if (flags & GOODIX_PACK_TLS_PREFIXED)
+    {
+      goodix_rx_image (operation, payload, len);
+    }
+  else
+    {
       /* Handshake records share the category-D stream and its waiter. */
       goodix_mcu_publish (self, payload, len);
-      break;
-
-    case GOODIX_PACK_TLS_DATA:
-      goodix_rx_image (operation, payload, len);
-      break;
-
-    default:
-      fp_dbg ("Ignoring pack with flags 0x%02x, %zu bytes", flags, len);
-      break;
     }
 }
 
