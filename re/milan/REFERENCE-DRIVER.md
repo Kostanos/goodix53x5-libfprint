@@ -32,6 +32,8 @@ package on another laptop. Static analysis only requires extracted files; no
 driver installation, firmware write, or PSK replacement is required to read
 the documented contracts. Addresses and sensor enums are version-specific.
 
+The [GM168SEC transport contract](GM168SEC-533C-TRANSPORT-CONTRACT.md) identifies the separate PID533C Windows and Linux TOD binaries.
+
 See [the profile-0 handoff](../../PROFILE0-SUPPORT-SCOPE.md) for the comparison
 scope and remaining contributor tasks. Profile 0 remains unsupported by the
 current Linux driver.
