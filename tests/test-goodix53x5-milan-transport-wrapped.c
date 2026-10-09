@@ -538,6 +538,52 @@ test_wrapped_open_foreign_psk (void)
   g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),e4,(16:20),");
 }
 
+/* The guard blocks every way the vendor driver writes a 533c (the PSK write
+ * as e0 and as its e4 fallback, firmware write, APP erase) and nothing that
+ * only reads it. Direct sensors, which the driver provisions, pass. */
+static void
+test_wrapped_write_guard (void)
+{
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(FpDevice) direct = NULL;
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  /* Length 32, offset 0, slot 0xbb020001, zero word. */
+  guint8 preset_read[16] = { 32, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x00, 0x02, 0xbb };
+  /* Total, fragment length and offset, then the PSK writer's prefix. */
+  guint8 psk_write[22] = { 22, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0,
+                           0x56, 0xa5, 0xbb, 0x95, 0x6b, 0x7c, 0x8d, 0x9e };
+  guint8 last_fragment[16] = { 0x04, 0x01, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0 };
+  guint8 two[2] = { 0 };
+  const struct { guint8 category, command; guint8 *payload; gsize len; gboolean refused; } cases[] = {
+    { 0xe, 0x2, preset_read, sizeof (preset_read), FALSE },
+    { 0xa, 0x4, two, sizeof (two), FALSE },
+    { 0xa, 0x1, two, sizeof (two), FALSE },
+    { 0xe, 0x0, psk_write, sizeof (psk_write), TRUE },
+    { 0xe, 0x2, psk_write, sizeof (psk_write), TRUE },
+    { 0xe, 0x2, last_fragment, sizeof (last_fragment), TRUE },
+    { 0xe, 0x1, two, sizeof (two), TRUE },
+    { 0xf, 0x0, two, sizeof (two), TRUE },
+    { 0xa, 0x2, two, sizeof (two), TRUE },
+  };
+
+  for (guint i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      GoodixCmd cmd = { .category = cases[i].category, .command = cases[i].command,
+                        .payload = cases[i].payload, .payload_len = cases[i].len };
+
+      g_assert_cmpint (goodix_cmd_refused (self, &cmd), ==, cases[i].refused);
+    }
+  g_clear_object (&action_cancel_token);
+
+  direct = fixture_device_new ();
+  {
+    GoodixCmd write = { .category = 0xe, .command = 0x1, .payload = two, .payload_len = 2 };
+
+    g_assert_false (goodix_cmd_refused (FPI_DEVICE_GOODIX53X5 (direct), &write));
+  }
+  g_clear_object (&action_cancel_token);
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -562,4 +608,5 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/open-unreadable-firmware",
                    test_wrapped_open_unreadable_firmware);
   g_test_add_func ("/goodix53x5/wrapped/open-foreign-psk", test_wrapped_open_foreign_psk);
+  g_test_add_func ("/goodix53x5/wrapped/write-guard", test_wrapped_write_guard);
 }

@@ -254,14 +254,37 @@ goodix_reply_implies_ack (GoodixTransport *operation, GoodixResponseSlot slot)
          operation->phase == GOODIX_TRANSPORT_ACK && operation->response_slot == slot;
 }
 
-/* Checks whether @cmd is a production write to a sensor this driver never
- * provisions, whichever caller asks. */
+/* Checks whether @cmd is a preset-slot read: e4 with a length, a zero
+ * offset, a slot and a zero word. A PSK write may also use e4, but its
+ * payload is a fragment header and data, never this. */
+static gboolean
+goodix_cmd_is_preset_read (const GoodixCmd *cmd)
+{
+  static const guint8 zero[4] = { 0 };
+
+  return cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION && cmd->command == 0x2 &&
+         cmd->payload_len == 16 && memcmp (cmd->payload + 4, zero, 4) == 0 &&
+         memcmp (cmd->payload + 12, zero, 4) == 0;
+}
+
+/* Checks whether @cmd could change what the sensor stores: any production
+ * command but a preset read (e0 and e2 writes, e4 used as a write), a
+ * firmware write (f0) or an APP erase (a4). */
+static gboolean
+goodix_cmd_writes_sensor (const GoodixCmd *cmd)
+{
+  if (cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION)
+    return !goodix_cmd_is_preset_read (cmd);
+  return (cmd->category == 0xf && cmd->command == 0x0) ||
+         (cmd->category == 0xa && cmd->command == 0x2);
+}
+
+/* Checks whether @cmd would write to a sensor this driver never provisions,
+ * whichever caller asks. */
 static gboolean
 goodix_cmd_refused (FpiDeviceGoodix53x5 *self, const GoodixCmd *cmd)
 {
-  return !goodix_variant (self)->provisionable &&
-         cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION &&
-         cmd->command == GOODIX_PROTO_CMD_PRODUCTION_WRITE;
+  return !goodix_variant (self)->provisionable && goodix_cmd_writes_sensor (cmd);
 }
 
 /* Appends @payload to the category-D stream and signals its waiter. */
@@ -1366,7 +1389,7 @@ goodix_transport_command (FpDevice                     *dev,
     {
       GoodixTransportResult result = {0};
       done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
-             "Refusing to write production data: this sensor is never provisioned"), data);
+             "Refusing to write to this sensor: it is never provisioned"), data);
       return;
     }
 
