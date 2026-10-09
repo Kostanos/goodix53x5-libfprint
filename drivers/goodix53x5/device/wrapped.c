@@ -19,6 +19,7 @@
 #include "device/transport.h"
 #include "device/commands.h"
 #include "device/session.h"
+#include "device/crypto.h"
 
 #include <string.h>
 
@@ -36,6 +37,9 @@
 /* The largest TLS record RFC 5246 allows (2^14 + 2048 bytes and its 5-byte
  * header) behind the prefix; a longer pack is a misread header. */
 #define GOODIX_PACK_MAX_PAYLOAD    (GOODIX_PACK_TLS_DATA_HDR + 5 + 16384 + 2048)
+
+/* FpParseImage takes exactly the raw12 pixels and their CRC. */
+#define GOODIX_WRAPPED_IMAGE_LEN (GOODIX_SENSOR_RAW12_BYTES + 4)
 
 /* 533c ships with the all-zero PSK; this slot holds its SHA-256. */
 #define GOODIX_WRAPPED_PSK_HASH_TYPE 0xbb020001
@@ -181,6 +185,16 @@ goodix_receive_wrapped (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
     }
 }
 
+/* Checks whether @image is a whole raw12 image whose trailing CRC, in the
+ * sensor's byte order, matches its pixels. */
+static gboolean
+goodix_wrapped_image_valid (const guint8 *image, gsize len)
+{
+  return len == GOODIX_WRAPPED_IMAGE_LEN &&
+         goodix_crypto_crc32_mpeg2 (image, GOODIX_SENSOR_RAW12_BYTES) ==
+         goodix_crypto_decode_u32 (image + GOODIX_SENSOR_RAW12_BYTES);
+}
+
 static GoodixFrameStatus
 goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
                           gsize len, guint8 **out, gsize *out_len)
@@ -190,6 +204,11 @@ goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
   *out = established && len > GOODIX_PACK_TLS_DATA_HDR ?
          goodix_tls_decrypt (self->tls, payload + GOODIX_PACK_TLS_DATA_HDR,
                              len - GOODIX_PACK_TLS_DATA_HDR, out_len) : NULL;
+  if (*out && !goodix_wrapped_image_valid (*out, *out_len))
+    {
+      fp_warn ("Rejecting a %zu-byte image without a valid CRC", *out_len);
+      g_clear_pointer (out, g_free);
+    }
   if (*out)
     return GOODIX_FRAME_DECRYPTED;
   return established ? GOODIX_FRAME_REJECTED_IN_SESSION : GOODIX_FRAME_REJECTED;
@@ -289,6 +308,7 @@ const GoodixVariant goodix_variant_wrapped = {
   .provisionable = FALSE,
   .reply_implies_ack = TRUE,
   .channel_restart_disarms = TRUE,
+  .restart_on_first_image_error = TRUE,
   .read_psk_hash = goodix_read_psk_hash_wrapped,
   .new_channel_attempt = goodix_tls_attempt_new,
   .frame = goodix_frame_wrapped,

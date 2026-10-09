@@ -983,13 +983,14 @@ receive_more:
   goodix_rx_continue (operation);
 }
 
-/* Requests a secure-channel restart at every second undecodable frame.
- * Successful frames do not clear the history, and an error during a restart
- * still consumes it. */
+/* Requests a secure-channel restart at every second undecodable frame, or
+ * at every one where the variant restarts on the first. Successful frames
+ * do not clear the history, and an error during a restart still consumes it. */
 static void
 goodix_count_image_error (FpiDeviceGoodix53x5 *self)
 {
-  if (!self->image_error_history)
+  if (!goodix_variant (self)->restart_on_first_image_error &&
+      !self->image_error_history)
     {
       self->image_error_history = TRUE;
       return;
@@ -1098,6 +1099,7 @@ const GoodixVariant goodix_variant_direct = {
   .provisionable = TRUE,
   .reply_implies_ack = FALSE,
   .channel_restart_disarms = FALSE,
+  .restart_on_first_image_error = FALSE,
   .read_psk_hash = goodix_read_psk_hash_direct,
   .new_channel_attempt = goodix_gtls_attempt_new,
   .frame = goodix_frame_direct,

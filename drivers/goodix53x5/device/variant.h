@@ -49,6 +49,9 @@ typedef struct
   /* TRUE where starting a new secure-channel session drops the
    * finger-detect arm, so a scan arms again after a channel restart. */
   gboolean    channel_restart_disarms;
+  /* TRUE where one undecodable image restarts the secure channel, as an
+   * OpenSSL session is dead after a failed record; GTLS waits for a second. */
+  gboolean    restart_on_first_image_error;
 
   /* Requests the PSK hash; goodix_cmd_parse_psk_hash_reply() reads it. */
   void              (*read_psk_hash) (FpiSsm *ssm, FpDevice *dev);
