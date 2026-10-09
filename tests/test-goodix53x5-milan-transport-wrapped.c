@@ -584,6 +584,87 @@ test_wrapped_write_guard (void)
   g_clear_object (&action_cancel_token);
 }
 
+/* Feeds @dev one protocol message as the sensor frames it. */
+static void
+receive_message (FpDevice *dev, guint8 category, guint8 command,
+                 const guint8 *payload, gsize len)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixTransport idle = { .dev = dev };
+  gsize message_len, framed_len;
+  g_autofree guint8 *message = goodix_proto_build_message (category, command, payload, len,
+                                                           TRUE, &message_len);
+  g_autofree guint8 *framed = fixture_wrap (message, message_len, &framed_len);
+
+  if (fixture_wrapped (dev))
+    goodix_receive_wrapped (self, &idle, framed, framed_len);
+  else
+    for (gsize offset = 0; offset < message_len; offset += GOODIX_USB_CHUNK_SIZE)
+      goodix_rx_cell (&idle, message + offset, MIN (GOODIX_USB_CHUNK_SIZE, message_len - offset));
+}
+
+/* On 533c an ACK with flag 0x02, for any command, reports lost configuration
+ * until a configuration reply arrives; 53x5 ACKs never report it. */
+static void
+test_wrapped_ack_reports_config_loss (void)
+{
+  const guint8 lost[2] = { 0xa8, 0x03 };
+  const guint8 config_reply[1] = { 1 };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(FpDevice) direct = NULL;
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  receive_message (dev, 0xb, 0, lost, sizeof (lost));
+  g_assert_true (self->config_lost);
+  receive_message (dev, 0x9, 0, config_reply, sizeof (config_reply));
+  g_assert_false (self->config_lost);
+  g_clear_object (&action_cancel_token);
+
+  direct = fixture_device_new ();
+  receive_message (direct, 0xb, 0, lost, sizeof (lost));
+  g_assert_false (FPI_DEVICE_GOODIX53X5 (direct)->config_lost);
+  g_clear_object (&action_cancel_token);
+}
+
+/* Returns the ACK and data budgets @dev gives the command with wire byte
+ * @command. */
+static void
+command_budget (FpDevice *dev, guint8 command, guint *ack_ms, guint *response_ms)
+{
+  GoodixTransport operation = { .dev = dev, .cmd = { .category = command >> 4,
+                                                     .command = (command >> 1) & 7 } };
+
+  goodix_cmd_set_policy (&operation);
+  *ack_ms = operation.ack_timeout_ms;
+  *response_ms = operation.response_timeout_ms;
+}
+
+/* 533c commands get the vendor's 1500 ms waits, with 500 ms for the EC
+ * control ACK; 53x5 keeps its native table. */
+static void
+test_wrapped_command_budgets (void)
+{
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(FpDevice) direct = NULL;
+  guint ack, response;
+
+  command_budget (dev, 0x32, &ack, &response);
+  g_assert_cmpuint (ack, ==, 1500);
+  g_assert_cmpuint (response, ==, 1500);
+  command_budget (dev, 0x20, &ack, &response);
+  g_assert_cmpuint (response, ==, 1500);
+  command_budget (dev, 0xae, &ack, &response);
+  g_assert_cmpuint (ack, ==, 500);
+  g_clear_object (&action_cancel_token);
+
+  direct = fixture_device_new ();
+  command_budget (direct, 0x32, &ack, &response);
+  g_assert_cmpuint (ack, ==, 500);
+  command_budget (direct, 0x20, &ack, &response);
+  g_assert_cmpuint (response, ==, 500);
+  g_clear_object (&action_cancel_token);
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -609,4 +690,7 @@ register_wrapped_tests (void)
                    test_wrapped_open_unreadable_firmware);
   g_test_add_func ("/goodix53x5/wrapped/open-foreign-psk", test_wrapped_open_foreign_psk);
   g_test_add_func ("/goodix53x5/wrapped/write-guard", test_wrapped_write_guard);
+  g_test_add_func ("/goodix53x5/wrapped/ack-reports-config-loss",
+                   test_wrapped_ack_reports_config_loss);
+  g_test_add_func ("/goodix53x5/wrapped/command-budgets", test_wrapped_command_budgets);
 }

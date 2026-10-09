@@ -61,10 +61,16 @@ typedef struct
   /* TRUE where starting a new secure-channel session drops the
    * finger-detect arm, so a scan arms again after a channel restart. */
   gboolean    channel_restart_disarms;
+  /* TRUE where ACK flag 0x02, on any command, means the sensor lost its
+   * configuration and needs it downloaded again. */
+  gboolean    ack_reports_config_loss;
   /* TRUE where one undecodable image restarts the secure channel, as an
    * OpenSSL session is dead after a failed record; GTLS waits for a second. */
   gboolean    restart_on_first_image_error;
 
+  /* Sets the ACK and data budgets, in ms, of the command with wire byte
+   * @command. */
+  void      (*command_budget) (guint8 command, guint *ack_ms, guint *response_ms);
   /* Requests the PSK hash; goodix_cmd_parse_psk_hash_reply() reads it. */
   void              (*read_psk_hash) (FpiSsm *ssm, FpDevice *dev);
   /* Returns a new SSM for one secure-channel handshake attempt. */

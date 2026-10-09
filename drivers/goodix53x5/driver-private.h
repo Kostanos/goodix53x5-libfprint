@@ -198,6 +198,10 @@ struct _FpiDeviceGoodix53x5
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;
   gboolean image_response_failed;
+  /* Set when an ACK reports the sensor lost its configuration, on a variant
+   * whose ACKs say so; cleared by the next configuration download. The scan
+   * restores the configuration before it waits for a finger again. */
+  gboolean config_lost;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */

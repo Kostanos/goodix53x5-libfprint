@@ -40,6 +40,7 @@
 #define GOODIX_PROTO_CATEGORY_ACK     0x0B
 #define GOODIX_PROTO_CMD_ACK          0x00
 #define GOODIX_PROTO_ACK_FLAG_VALID   0x01
+#define GOODIX_PROTO_ACK_FLAG_CONFIG_LOST 0x02
 #define GOODIX_PROTO_CATEGORY_FDT     0x03
 #define GOODIX_PROTO_CMD_FDT_DOWN     0x01
 #define GOODIX_PROTO_CMD_FDT_UP       0x02
@@ -160,15 +161,25 @@ goodix_response_bit (GoodixResponseSlot slot)
   return slot == GOODIX_RESPONSE_NONE ? 0 : 1u << slot;
 }
 
+/* The 53x5 native budgets: the command table, with fixed fallbacks for
+ * commands it does not list. */
+static void
+goodix_direct_command_budget (guint8 command, guint *ack_ms, guint *response_ms)
+{
+  const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
+
+  *ack_ms = policy ? policy->ack_ms : GOODIX_ACK_TIMEOUT;
+  *response_ms = policy && policy->response_ms ? policy->response_ms : GOODIX_DATA_TIMEOUT;
+}
+
 static void
 goodix_cmd_set_policy (GoodixTransport *operation)
 {
-  const GoodixCommandPolicy *policy = goodix_cmd_policy (
-    GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command));
+  guint8 command = GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command);
+  const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
 
-  operation->ack_timeout_ms = policy ? policy->ack_ms : GOODIX_ACK_TIMEOUT;
-  operation->response_timeout_ms = policy && policy->response_ms ?
-                                   policy->response_ms : GOODIX_DATA_TIMEOUT;
+  goodix_variant (FPI_DEVICE_GOODIX53X5 (operation->dev))->command_budget (
+    command, &operation->ack_timeout_ms, &operation->response_timeout_ms);
   operation->response_slot = policy && operation->expect_data ?
                              policy->response_slot : GOODIX_RESPONSE_NONE;
   operation->retry = policy && policy->retry &&
@@ -779,6 +790,9 @@ goodix_rx_cell (GoodixTransport *operation,
           payload[0] == GOODIX_PROTO_CMD_BYTE (self->transport->cmd.category,
                                               self->transport->cmd.command))
         self->transport->ack_status = payload[1];
+      if (ack_packet && (payload[1] & GOODIX_PROTO_ACK_FLAG_CONFIG_LOST) &&
+          goodix_variant (self)->ack_reports_config_loss)
+        self->config_lost = TRUE;
 
       if (self->reply_valid)
         {
@@ -848,6 +862,9 @@ goodix_rx_cell (GoodixTransport *operation,
             }
           if (category == 9 && command == 2)
             self->config_response_status = payload[0];
+          /* The sensor answering a download holds a configuration again. */
+          if (category == 9)
+            self->config_lost = FALSE;
 
           /* DataFromDevice publishes these shared stores without a matching
            * command. Only A/0, A/1 and A/4 signal the version getter's event.
@@ -1136,6 +1153,8 @@ const GoodixVariant goodix_variant_direct = {
   .reply_implies_ack = FALSE,
   .channel_restart_disarms = FALSE,
   .restart_on_first_image_error = FALSE,
+  .ack_reports_config_loss = FALSE,
+  .command_budget = goodix_direct_command_budget,
   .read_psk_hash = goodix_read_psk_hash_direct,
   .new_channel_attempt = goodix_gtls_attempt_new,
   .frame = goodix_frame_direct,

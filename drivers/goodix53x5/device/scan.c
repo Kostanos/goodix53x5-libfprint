@@ -498,6 +498,14 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             goodix_scan_maybe_finish_requested (data);
             return;
           }
+        if (self->config_lost && !data->stop_requested)
+          {
+            /* One download per report, as the vendor's power-lost handler
+             * makes: a failed one is not retried in a loop. */
+            self->config_lost = FALSE;
+            fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RESTORE_CONFIG);
+            return;
+          }
         /* A pending notification can complete synchronously and free data.
          * Preserve the arm/stop receive-and-cancel window without borrowing it
          * after submission. cancel_event affects only a still-pending wait. */

@@ -226,6 +226,15 @@ goodix_wrapped_self_check (const char *firmware)
           g_ascii_strcasecmp (fields[1], "GM168SEC") == 0);
 }
 
+/* The vendor's MCU context waits 1500 ms for every ACK and every reply;
+ * EC control alone gives its ACK 500 ms. */
+static void
+goodix_wrapped_command_budget (guint8 command, guint *ack_ms, guint *response_ms)
+{
+  *ack_ms = command == 0xae ? 500 : 1500;
+  *response_ms = 1500;
+}
+
 static void
 goodix_read_psk_hash_wrapped (FpiSsm *ssm, FpDevice *dev)
 {
@@ -327,6 +336,8 @@ const GoodixVariant goodix_variant_wrapped = {
   .reply_implies_ack = TRUE,
   .channel_restart_disarms = TRUE,
   .restart_on_first_image_error = TRUE,
+  .ack_reports_config_loss = TRUE,
+  .command_budget = goodix_wrapped_command_budget,
   .read_psk_hash = goodix_read_psk_hash_wrapped,
   .new_channel_attempt = goodix_tls_attempt_new,
   .frame = goodix_frame_wrapped,
