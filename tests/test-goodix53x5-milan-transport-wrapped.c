@@ -373,6 +373,171 @@ test_wrapped_first_image_error_restarts (void)
   g_clear_object (&action_cancel_token);
 }
 
+/* How the simulated 533c answers the open sequence. */
+typedef struct
+{
+  const char *firmware;
+  /* Firmware-version reads that time out before one is answered. */
+  guint       silent_firmware_reads;
+  gboolean    foreign_psk;
+} WrappedOpen;
+
+/* Answers the read pending for io.command: its ACK first, then its reply. */
+static void
+wrapped_open_answer (const WrappedOpen *sensor, gboolean *acked, guint *firmware_reads)
+{
+  static const guint8 chip[4] = { 0x0c, 0xa1, 0x00, 0x22 };
+  static const guint8 irq[4] = { 0 };
+  /* Status, slot 0xbb020001, length 32, SHA-256 of the all-zero PSK. */
+  guint8 psk_hash[41] = {
+    0, 0x01, 0x00, 0x02, 0xbb, 32, 0, 0, 0,
+    0x66, 0x68, 0x7a, 0xad, 0xf8, 0x62, 0xbd, 0x77, 0x6c, 0x8f, 0xc1, 0x8b,
+    0x8e, 0x9f, 0x8e, 0x20, 0x08, 0x97, 0x14, 0x85, 0x6e, 0xe2, 0x33, 0xb3,
+    0x90, 0x2a, 0x59, 0x1d, 0x0d, 0x5f, 0x29, 0x25,
+  };
+
+  if (io.command == 0xa8 && *firmware_reads < sensor->silent_firmware_reads)
+    {
+      (*firmware_reads)++;
+      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                             "Silent firmware read"));
+      return;
+    }
+  if (!*acked)
+    {
+      ack_reply (usb.pending, io.command);
+      *acked = TRUE;
+    }
+  else if (io.command == 0xa8)
+    reply (usb.pending, 0xa, 4, (const guint8 *) sensor->firmware, strlen (sensor->firmware) + 1);
+  else if (io.command == 0xe4)
+    {
+      psk_hash[20] ^= sensor->foreign_psk;
+      reply (usb.pending, 0xe, 2, psk_hash, sizeof (psk_hash));
+    }
+  else if (io.command == 0xa2)
+    reply (usb.pending, 0xa, 1, irq, sizeof (irq));
+  else if (io.command == 0x82)
+    reply (usb.pending, 0x8, 1, chip, sizeof (chip));
+  fixture_complete (NULL);
+}
+
+/* Prepares @dev to run commands against the fixture's simulated USB. */
+static void
+command_session_begin (FpDevice *dev)
+{
+  static const Scenario scenario = { .schedule = EVENT_CANCELLED };
+
+  memset (&io, 0, sizeof (io));
+  io.scenario = &scenario;
+  FPI_DEVICE_GOODIX53X5 (dev)->cancel = g_cancellable_new ();
+}
+
+/* Joins @dev's reader and releases what command_session_begin() and the
+ * commands left behind. */
+static void
+command_session_end (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  fixture_join_reader (dev);
+  g_clear_object (&self->cancel);
+  g_clear_pointer (&self->rx.buf, g_free);
+  g_clear_object (&action_cancel_token);
+}
+
+/* Runs open on a 533c up to its OTP read and returns the commands it wrote,
+ * as "cmd(payload length:first payload byte)," each, with its error in
+ * @error. */
+static gchar *
+run_wrapped_open (const WrappedOpen *sensor, GError **error)
+{
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gboolean acked = FALSE;
+  guint firmware_reads = 0;
+
+  command_session_begin (dev);
+  startup_trace = g_string_new (NULL);
+  fpi_ssm_start (fpi_ssm_new_full (dev, goodix_open_ssm_handler,
+                                  GOODIX_OPEN_READ_OTP, GOODIX_OPEN_READ_OTP,
+                                  "wrapped-open"), startup_done);
+  for (guint step = 0; !io.completions && step < 200; step++)
+    {
+      if (!self->transport)
+        g_main_context_iteration (NULL, TRUE);
+      else if (usb.pending->endpoint == goodix_variant_wrapped.ep_out)
+        {
+          /* The message's LE16 length counts its payload and checksum. */
+          g_string_append_printf (startup_trace, "(%u:%02x),", usb.pending->buffer[5] - 1,
+                                  usb.pending->buffer[7]);
+          acked = FALSE;
+          fixture_complete (NULL);
+        }
+      else
+        wrapped_open_answer (sensor, &acked, &firmware_reads);
+    }
+  if (!io.completions)
+    g_error ("open did not finish: %s", startup_trace->str);
+  *error = g_steal_pointer (&io.error);
+  command_session_end (dev);
+  return g_string_free (g_steal_pointer (&startup_trace), FALSE);
+}
+
+/* 533c opens in the vendor's order: wake with a four-byte NOP, read the
+ * firmware for SelfCheck, check the PSK, then reset asking for the IRQ
+ * reply and read the chip ID with the five-byte request. */
+static void
+test_wrapped_open_order (void)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
+  g_autoptr(GError) error = NULL;
+  g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
+
+  g_assert_no_error (error);
+  g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),e4,(16:20),a2,(2:05),82,(5:00),");
+}
+
+/* SelfCheck refuses firmware for another MCU before anything else runs. */
+static void
+test_wrapped_open_foreign_firmware (void)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GD32_APP_13016" };
+  g_autoptr(GError) error = NULL;
+  g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
+
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED);
+  g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),");
+}
+
+/* Without a firmware version there is no SelfCheck, so open stops; 53x5
+ * native continues instead. */
+static void
+test_wrapped_open_unreadable_firmware (void)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016",
+                               .silent_firmware_reads = G_MAXUINT };
+  g_autoptr(GError) error = NULL;
+  g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
+
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO);
+  g_assert_nonnull (strstr (error->message, "Firmware version unreadable"));
+  g_assert_false (strstr (trace, "e4"));
+}
+
+/* A sensor holding another PSK stops open before the reset. */
+static void
+test_wrapped_open_foreign_psk (void)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016",
+                               .foreign_psk = TRUE };
+  g_autoptr(GError) error = NULL;
+  g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
+
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID);
+  g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),e4,(16:20),");
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -391,4 +556,10 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/image-check", test_wrapped_image_check);
   g_test_add_func ("/goodix53x5/wrapped/first-image-error-restarts",
                    test_wrapped_first_image_error_restarts);
+  g_test_add_func ("/goodix53x5/wrapped/open-order", test_wrapped_open_order);
+  g_test_add_func ("/goodix53x5/wrapped/open-foreign-firmware",
+                   test_wrapped_open_foreign_firmware);
+  g_test_add_func ("/goodix53x5/wrapped/open-unreadable-firmware",
+                   test_wrapped_open_unreadable_firmware);
+  g_test_add_func ("/goodix53x5/wrapped/open-foreign-psk", test_wrapped_open_foreign_psk);
 }

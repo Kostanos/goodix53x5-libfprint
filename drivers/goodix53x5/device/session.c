@@ -248,6 +248,8 @@ typedef enum {
   GOODIX_OPEN_USB_RESET = 0,
   GOODIX_OPEN_CLAIM_INTERFACE,
   GOODIX_OPEN_PING,
+  GOODIX_OPEN_EARLY_PSK_READ,
+  GOODIX_OPEN_EARLY_PSK_CHECK,
   GOODIX_OPEN_RESET,
   GOODIX_OPEN_READ_OTP,
   GOODIX_OPEN_PARSE_OTP,
@@ -280,6 +282,10 @@ goodix_open_state_name (GoodixOpenState state)
       return "claim_interface";
     case GOODIX_OPEN_PING:
       return "ping";
+    case GOODIX_OPEN_EARLY_PSK_READ:
+      return "early_psk_read";
+    case GOODIX_OPEN_EARLY_PSK_CHECK:
+      return "early_psk_check";
     case GOODIX_OPEN_RESET:
       return "reset";
     case GOODIX_OPEN_READ_OTP:
@@ -459,7 +465,12 @@ goodix_probe_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
       g_free (self->fw_version);
       self->fw_version = g_strndup ((const gchar *) self->shared_response,
                                     sizeof (self->shared_response));
-      fpi_ssm_mark_completed (ssm);
+      if (!goodix_variant (self)->self_check (self->fw_version))
+        fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                               FP_DEVICE_ERROR_NOT_SUPPORTED,
+                               "Firmware %s is not for this sensor's MCU", self->fw_version));
+      else
+        fpi_ssm_mark_completed (ssm);
     }
   else
     {
@@ -474,6 +485,7 @@ static void
 goodix_probe_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 {
   guint *failures = fpi_ssm_get_data (ssm);
+  const GoodixVariant *variant = goodix_variant (FPI_DEVICE_GOODIX53X5 (dev));
 
   if (goodix_probe_cancelled (ssm, dev))
     return;
@@ -485,7 +497,12 @@ goodix_probe_ssm_handler (FpiSsm *ssm, FpDevice *dev)
                         goodix_probe_result);
       break;
     case GOODIX_PROBE_AFTER_DELAY:
-      if (*failures == 5)
+      if (*failures == variant->firmware_reads && variant->firmware_required)
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                 FP_DEVICE_ERROR_PROTO, "Firmware version unreadable"));
+        }
+      else if (*failures == variant->firmware_reads)
         {
           fp_dbg ("Startup firmware query exhausted; continuing device initialization");
           fpi_ssm_mark_completed (ssm);
@@ -593,7 +610,8 @@ goodix_chip_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     case GOODIX_CHIP_INITIAL_RESET:
     case GOODIX_CHIP_RECOVERY_RESET:
       goodix_cmd_reset_sensor (ssm, dev,
-                                fpi_ssm_get_cur_state (ssm) == GOODIX_CHIP_RECOVERY_RESET,
+                                fpi_ssm_get_cur_state (ssm) == GOODIX_CHIP_RECOVERY_RESET ||
+                                goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->initial_reset_requests_irq,
                                 goodix_chip_result);
       break;
 
@@ -882,6 +900,39 @@ goodix_open_native_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
     }
 }
 
+/* Checks whether @hash, as the sensor reports it, is the SHA-256 of the PSK
+ * this driver holds. */
+static gboolean
+goodix_psk_hash_is_current (FpiDeviceGoodix53x5 *self, const guint8 *hash, gsize len)
+{
+  g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
+  guint8 expected[32];
+  gsize expected_len = sizeof (expected);
+
+  g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
+  g_checksum_get_digest (sha, expected, &expected_len);
+  return len >= sizeof (expected) && memcmp (hash, expected, sizeof (expected)) == 0;
+}
+
+/* Checks whether the PSK hash the sensor just returned is the hash of the
+ * PSK this driver holds, setting @matches. Returns FALSE, failing @ssm, when
+ * the reply does not parse. */
+static gboolean
+goodix_open_psk_hash_matches (FpiSsm *ssm, FpDevice *dev, gboolean *matches)
+{
+  const guint8 *hash;
+  gsize hash_len;
+
+  if (!goodix_cmd_parse_psk_hash_reply (dev, &hash, &hash_len))
+    {
+      fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                          "Failed to read PSK hash"));
+      return FALSE;
+    }
+  *matches = goodix_psk_hash_is_current (FPI_DEVICE_GOODIX53X5 (dev), hash, hash_len);
+  return TRUE;
+}
+
 static void
 goodix_open_ssm_handler (FpiSsm   *ssm,
                          FpDevice *dev)
@@ -941,6 +992,39 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
+    case GOODIX_OPEN_EARLY_PSK_READ:
+      {
+        g_autoptr(GError) error = NULL;
+
+        if (!goodix_variant (self)->psk_checked_before_reset)
+          {
+            fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_RESET);
+            return;
+          }
+        if (!goodix_load_psk (self, &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+        goodix_variant (self)->read_psk_hash (ssm, dev);
+      }
+      break;
+
+    case GOODIX_OPEN_EARLY_PSK_CHECK:
+      {
+        gboolean matches;
+
+        if (!goodix_open_psk_hash_matches (ssm, dev, &matches))
+          return;
+        if (!matches)
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                 FP_DEVICE_ERROR_DATA_INVALID,
+                                 "Sensor PSK does not match, and this sensor is never provisioned"));
+        else
+          fpi_ssm_next_state (ssm);
+      }
+      break;
+
     case GOODIX_OPEN_RESET:
       {
         /* Cold HAL construction deactivates the anchor before any reference
@@ -990,6 +1074,11 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         /* Sensor checking reseeds current/default; native static adjustment
          * history is owned by live capture, not HAL reconstruction. */
         self->dynamic_dac.default_dac = self->calib.dac_h;
+        if (goodix_variant (self)->psk_checked_before_reset)
+          {
+            fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_GTLS_CLIENT_HELLO);
+            return;
+          }
         if (!goodix_load_psk (self, &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
@@ -1005,36 +1094,17 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_WRITE_PSK:
       {
-        /* Check if the sensor PSK hash matches the selected PSK.
-         * Parse the production_read response. */
-        const guint8 *psk_data;
-        gsize psk_data_len;
+        gboolean matches;
 
-        if (!goodix_cmd_parse_psk_hash_reply (dev, &psk_data, &psk_data_len))
+        if (!goodix_open_psk_hash_matches (ssm, dev, &matches))
+          return;
+        if (matches)
           {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to read PSK hash"));
+            fp_dbg ("PSK hash matches, no need to write");
+            self->psk_write_verify_pending = FALSE;
+            fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_GTLS_CLIENT_HELLO);
             return;
           }
-
-        /* Compute SHA256 of our PSK and compare */
-        {
-          g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
-          guint8 expected_hash[32];
-          gsize hash_len = 32;
-
-          g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
-          g_checksum_get_digest (sha, expected_hash, &hash_len);
-
-          if (psk_data_len >= 32 && memcmp (psk_data, expected_hash, 32) == 0)
-            {
-              fp_dbg ("PSK hash matches, no need to write");
-              self->psk_write_verify_pending = FALSE;
-              fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_GTLS_CLIENT_HELLO);
-              return;
-            }
-        }
 
         if (!goodix_variant (self)->provisionable)
           {
@@ -1096,9 +1166,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             /* Parse the re-read PSK hash from the previous state */
             const guint8 *psk_data;
             gsize psk_data_len;
-            g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
-            guint8 expected_hash[32];
-            gsize hash_len = 32;
 
             if (!goodix_cmd_parse_psk_hash_reply (dev, &psk_data, &psk_data_len))
               {
@@ -1108,10 +1175,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
                 return;
               }
 
-            g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
-            g_checksum_get_digest (sha, expected_hash, &hash_len);
-
-            if (psk_data_len < 32 || memcmp (psk_data, expected_hash, 32) != 0)
+            if (!goodix_psk_hash_is_current (self, psk_data, psk_data_len))
               {
                 fpi_ssm_mark_failed (ssm,
                                      fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,

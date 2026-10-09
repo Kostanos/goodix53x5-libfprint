@@ -114,7 +114,7 @@ idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
 {
   /* The startup fixture retains its claim/probe/reset boundary now that reset
    * belongs to the chip child. Run the real reset and its delay, but no read. */
-  if (startup_trace && handler == goodix_chip_ssm_handler)
+  if (startup_trace && handler == goodix_chip_ssm_handler && !fixture_wrapped (dev))
     return fpi_ssm_new_full (dev, handler, GOODIX_CHIP_READ,
                              GOODIX_CHIP_READ, name);
   if (handler != goodix_open_ssm_handler)

@@ -148,6 +148,29 @@ fixture_complete (GError *error)
   fixture_refresh_wait ();
 }
 
+gboolean
+fixture_wrapped (FpDevice *dev)
+{
+  return goodix_variant (FPI_DEVICE_GOODIX53X5 (dev)) == &goodix_variant_wrapped;
+}
+
+/* Returns @message in one 0xa0 pack, zero-padded to whole 64-byte chunks,
+ * written from the vendor's framing rather than the driver's helpers. */
+guint8 *
+fixture_wrap (const guint8 *message, gsize len, gsize *out_len)
+{
+  gsize size = (4 + len + 63) / 64 * 64;
+  guint8 *pack = g_malloc0 (size);
+
+  pack[0] = 0xa0;
+  pack[1] = len & 0xff;
+  pack[2] = len >> 8;
+  pack[3] = pack[0] + pack[1] + pack[2];
+  memcpy (pack + 4, message, len);
+  *out_len = size;
+  return pack;
+}
+
 void
 reply (FpiUsbTransfer *transfer, guint8 category, guint8 command,
        const guint8 *payload, gsize length)
@@ -155,8 +178,19 @@ reply (FpiUsbTransfer *transfer, guint8 category, guint8 command,
   gsize size;
   g_autofree guint8 *bytes = goodix_proto_build_message (
     category, command, payload, length, TRUE, &size);
-  g_assert_cmpuint (size, <=, transfer->length);
+
   memset (transfer->buffer, 0, transfer->length);
+  if (fixture_wrapped (transfer->device))
+    {
+      /* One message pack, zero-padded to whole USB chunks. */
+      g_autofree guint8 *pack = fixture_wrap (bytes, size, &size);
+
+      g_assert_cmpuint (size, <=, transfer->length);
+      memcpy (transfer->buffer, pack, size);
+      transfer->actual_length = size;
+      return;
+    }
+  g_assert_cmpuint (size, <=, transfer->length);
   memcpy (transfer->buffer, bytes, size);
   transfer->actual_length = 64; /* One padded protocol cell, not the read capacity. */
 }

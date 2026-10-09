@@ -37,8 +37,20 @@ typedef struct
   guint8      usb_interface;
   guint8      ep_in;
   guint8      ep_out;
-  /* Bytes of the chip-ID register read; the first four agree across both. */
-  gsize       chip_id_request_len;
+  /* Bytes of the wake NOP's zero payload. */
+  gsize       wake_payload_len;
+  /* The firmware-version reads open attempts before giving up on the version. */
+  guint       firmware_reads;
+  /* TRUE where open fails without a firmware version, as SelfCheck needs one;
+   * 53x5 native continues without it. */
+  gboolean    firmware_required;
+  /* Checks whether @firmware runs on an MCU platform this driver speaks to. */
+  gboolean  (*self_check) (const char *firmware);
+  /* TRUE where the vendor checks the PSK before resetting the sensor and
+   * reading its chip ID and OTP, so open does too. */
+  gboolean    psk_checked_before_reset;
+  /* TRUE where the first reset asks for the IRQ status reply. */
+  gboolean    initial_reset_requests_irq;
   /* The preset slot holding the SHA-256 of the sensor's PSK. */
   guint32     psk_hash_type;
   /* FALSE where a failed PSK or production write could not be recovered

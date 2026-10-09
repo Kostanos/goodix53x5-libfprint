@@ -1083,6 +1083,14 @@ goodix_decrypt_frame_gtls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
          GOODIX_FRAME_REJECTED_IN_SESSION : GOODIX_FRAME_REJECTED;
 }
 
+/* 53x5 native checks no MCU platform. */
+static gboolean
+goodix_direct_self_check (const char *firmware)
+{
+  (void) firmware;
+  return TRUE;
+}
+
 static void
 goodix_read_psk_hash_direct (FpiSsm *ssm, FpDevice *dev)
 {
@@ -1094,7 +1102,12 @@ const GoodixVariant goodix_variant_direct = {
   .usb_interface = 1,
   .ep_in = GOODIX_EP_IN,
   .ep_out = GOODIX_EP_OUT,
-  .chip_id_request_len = 5,
+  .wake_payload_len = 2,
+  .firmware_reads = 5,
+  .firmware_required = FALSE,
+  .self_check = goodix_direct_self_check,
+  .psk_checked_before_reset = FALSE,
+  .initial_reset_requests_irq = FALSE,
   .psk_hash_type = 0xB003,
   .provisionable = TRUE,
   .reply_implies_ack = FALSE,

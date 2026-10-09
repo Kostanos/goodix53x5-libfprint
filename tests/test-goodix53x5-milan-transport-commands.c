@@ -52,7 +52,9 @@ write_contract_case (const Scenario *scenario)
 void
 check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
 {
-  if (transfer->endpoint == GOODIX_EP_IN)
+  const GoodixVariant *variant = goodix_variant (FPI_DEVICE_GOODIX53X5 (transfer->device));
+
+  if (transfer->endpoint == variant->ep_in)
     {
       g_assert_cmpuint (transfer->length, ==, 0x8000);
       g_assert_cmpuint (timeout, ==, 0);
@@ -62,7 +64,7 @@ check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
   else
     {
       GBytes **first = NULL;
-      g_assert_cmpuint (transfer->endpoint, ==, GOODIX_EP_OUT);
+      g_assert_cmpuint (transfer->endpoint, ==, variant->ep_out);
       if (write_contract_case (io.scenario) &&
           (timeout != 0 || cancel != FPI_DEVICE_GOODIX53X5 (transfer->device)->session_cancel))
         g_test_fail ();
@@ -70,16 +72,18 @@ check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
         io.precancelled_writes++;
       else
         io.started_writes++;
-      io.command = transfer->buffer[0];
-      if (startup_trace)
+      /* Wrapped writes carry the message behind their pack header. */
+      io.command = transfer->buffer[fixture_wrapped (transfer->device) ? 4 : 0];
+      if (startup_trace && !fixture_wrapped (transfer->device))
         {
           guint8 ping[] = { 0, 3, 0, 0, 0, 0xa7 };
           guint8 fw[] = { 0xa8, 3, 0, 0, 0, 0xff };
           guint8 reset[] = { 0xa2, 3, 0, 1, 0x14, 0xf0 };
           const guint8 *expected = io.command == 0 ? ping : io.command == 0xa8 ? fw : reset;
           g_assert_cmpmem (transfer->buffer, 6, expected, 6);
-          g_string_append_printf (startup_trace, "%02x,", io.command);
         }
+      if (startup_trace)
+        g_string_append_printf (startup_trace, "%02x,", io.command);
       io.sends[io.command]++;
       io.ec_data = FALSE;
       if (arm_repair_case (io.scenario) && io.command == 0x90)

@@ -59,11 +59,11 @@ typedef struct
   gboolean      reply_implies_ack;
   /* TRUE where the ping may go unanswered. */
   gboolean      ping_may_be_silent;
+  /* Bytes of the ping's zero payload. */
+  gsize         ping_payload_length;
   guint8        reset_payload[2];
   /* TRUE where the sensor answers the reset, so its reply is read with it. */
   gboolean      reset_replies;
-  /* Bytes of the chip-ID register read; the first four agree. */
-  gsize         chip_request_length;
   /* The slot the PSK hash is read from and the record type it comes back as. */
   guint32       psk_hash_type;
   /* Writes the request reading @type into @request; returns its length. */
@@ -496,7 +496,7 @@ static const ProbeLayout probe_layouts[] = {
     .frame = frame_direct,
     .receive = receive_direct_message,
     .reset_payload = { 0x01, 0x14 },
-    .chip_request_length = 5,
+    .ping_payload_length = 2,
     .psk_hash_type = GOODIX_PSK_HASH_DIRECT,
     .psk_hash_request = production_read_request,
   },
@@ -510,9 +510,9 @@ static const ProbeLayout probe_layouts[] = {
     .receive = receive_wrapped_message,
     .reply_implies_ack = TRUE,
     .ping_may_be_silent = TRUE,
+    .ping_payload_length = 4,
     .reset_payload = { 0x05, 0x14 },
     .reset_replies = TRUE,
-    .chip_request_length = 4,
     .psk_hash_type = GOODIX_PSK_HASH_WRAPPED,
     .psk_hash_request = preset_read_request,
     .requires_default_psk = TRUE,
@@ -758,7 +758,7 @@ static ProbeResult
 probe_device (GUsbDevice  *device,
               ProbeReport *report)
 {
-  const guint8 ping_payload[] = { 0x00, 0x00 };
+  const guint8 ping_payload[4] = { 0 };
   const guint8 firmware_payload[] = { 0x00, 0x00 };
   const guint8 chip_payload[] = { 0x00, 0x00, 0x00, 0x04, 0x00 };
   const guint8 otp_payload[] = { 0x00, 0x00 };
@@ -797,7 +797,7 @@ probe_device (GUsbDevice  *device,
     goto out;
 
   reply = run_command (&probe, 0x00, 0x00, ping_payload,
-                       sizeof (ping_payload), FALSE, &error);
+                       probe.layout->ping_payload_length, FALSE, &error);
   if (!reply && is_silent_ping (&probe, error))
     g_clear_error (&error);
   else if (!reply)
@@ -823,7 +823,7 @@ probe_device (GUsbDevice  *device,
 
   g_clear_pointer (&reply, g_byte_array_unref);
   reply = run_command (&probe, 0x08, 0x01, chip_payload,
-                       probe.layout->chip_request_length, TRUE, &error);
+                       sizeof (chip_payload), TRUE, &error);
   if (!reply || !parse_reply (reply, 0x08, 0x01, &payload,
                               &payload_length, &error))
     goto out;

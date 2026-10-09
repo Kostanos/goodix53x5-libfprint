@@ -214,6 +214,18 @@ goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
   return established ? GOODIX_FRAME_REJECTED_IN_SESSION : GOODIX_FRAME_REJECTED;
 }
 
+/* Checks whether @firmware, such as GF5288_GM168SEC_APP_13016, names the
+ * GM168 or GM168SEC platform, as the vendor's SelfCheck requires. */
+static gboolean
+goodix_wrapped_self_check (const char *firmware)
+{
+  g_auto(GStrv) fields = g_strsplit (firmware, "_", 4);
+
+  return g_strv_length (fields) >= 2 &&
+         (g_ascii_strcasecmp (fields[1], "GM168") == 0 ||
+          g_ascii_strcasecmp (fields[1], "GM168SEC") == 0);
+}
+
 static void
 goodix_read_psk_hash_wrapped (FpiSsm *ssm, FpDevice *dev)
 {
@@ -302,7 +314,13 @@ const GoodixVariant goodix_variant_wrapped = {
   .usb_interface = 0,
   .ep_in = 0x03 | FPI_USB_ENDPOINT_IN,
   .ep_out = 0x01 | FPI_USB_ENDPOINT_OUT,
-  .chip_id_request_len = 4,
+  .wake_payload_len = 4,
+  /* SelfCheck reads, then wakes and reads once more. */
+  .firmware_reads = 2,
+  .firmware_required = TRUE,
+  .self_check = goodix_wrapped_self_check,
+  .psk_checked_before_reset = TRUE,
+  .initial_reset_requests_irq = TRUE,
   .psk_hash_type = GOODIX_WRAPPED_PSK_HASH_TYPE,
   /* 533c returns no firmware in APP mode, so nothing could restore it. */
   .provisionable = FALSE,

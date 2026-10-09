@@ -230,10 +230,11 @@ void
 goodix_cmd_probe (FpiSsm *ssm, FpDevice *dev, gboolean firmware,
                   GoodixCmdResultCallback callback)
 {
-  guint8 payload[2] = { 0, 0 };
+  guint8 payload[4] = { 0 };
+  gsize len = firmware ? 2 : goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->wake_payload_len;
 
   goodix_run_cmd_result (ssm, dev, firmware ? 0x0a : 0, firmware ? 4 : 0,
-                         payload, sizeof (payload), firmware, callback);
+                         payload, len, firmware, callback);
 }
 
 void
@@ -267,9 +268,7 @@ goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev,
     0x04, 0x00, /* size LE */
   };
 
-  /* Wrapped sensors take a one-byte size; the first four bytes agree. */
-  goodix_run_cmd_result (ssm, dev, 0x8, 0x1, payload,
-                         goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->chip_id_request_len,
+  goodix_run_cmd_result (ssm, dev, 0x8, 0x1, payload, sizeof (payload),
                          TRUE, callback);
 }
 

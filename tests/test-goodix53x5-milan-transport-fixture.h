@@ -36,5 +36,7 @@ void test_transport_wait_info (FpDevice *dev, guint *timeout, GCancellable **can
 void test_transport_wait_failed (FpDevice *dev, GError *error);
 gsize fixture_fragment (const guint8 *packet, gsize size, gsize offset);
 void reply (FpiUsbTransfer *, guint8, guint8, const guint8 *, gsize);
+gboolean fixture_wrapped (FpDevice *dev);
+guint8 *fixture_wrap (const guint8 *message, gsize len, gsize *out_len);
 void ack_reply (FpiUsbTransfer *, guint8);
 void add_transport_case (const char *name, gconstpointer data, GTestDataFunc test);
