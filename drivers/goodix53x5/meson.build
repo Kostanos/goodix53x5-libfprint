@@ -11,6 +11,7 @@ goodix53x5_sources = files(
     'device/calibration.c',
     'device/commands.c',
     'device/crypto.c',
+    'device/tls.c',
     'device/enroll.c',
     'device/health.c',
     'milan/enrollment/propagation.c',

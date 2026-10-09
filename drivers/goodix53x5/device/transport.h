@@ -29,6 +29,9 @@ typedef struct
   guint8  *payload;
   gsize    payload_len;
   gboolean use_checksum;
+  /* Wrapped sensors only: TRUE sends payload as a raw TLS record, which the
+   * sensor never ACKs, instead of a category/command message. */
+  gboolean tls_record;
 } GoodixCmd;
 
 typedef struct

@@ -32,6 +32,18 @@
 /* USB endpoints — interface 1, CDC Data class */
 #define GOODIX_EP_OUT (0x03 | FPI_USB_ENDPOINT_OUT)
 #define GOODIX_EP_IN  (0x01 | FPI_USB_ENDPOINT_IN)
+/* Wrapped sensors — interface 0, vendor class */
+#define GOODIX_WRAPPED_EP_OUT (0x01 | FPI_USB_ENDPOINT_OUT)
+#define GOODIX_WRAPPED_EP_IN  (0x03 | FPI_USB_ENDPOINT_IN)
+
+/* Wrapped framing: [flags(1)][length(2 LE)][sum of the first three(1)]
+ * then length bytes. 0xa0 carries one protocol message, 0xb0 a TLS
+ * handshake record, 0xb2 a 9-byte header and a TLS application record. */
+#define GOODIX_PACK_HEADER       4
+#define GOODIX_PACK_MESSAGE      0xa0
+#define GOODIX_PACK_TLS          0xb0
+#define GOODIX_PACK_TLS_DATA     0xb2
+#define GOODIX_PACK_TLS_DATA_HDR 9
 
 /* USB chunk size */
 #define GOODIX_USB_CHUNK_SIZE 64
@@ -232,6 +244,49 @@ goodix_deadline_remaining (gint64 deadline_us)
   return remaining > 0 ? (guint) ((remaining + 999) / 1000) : 0;
 }
 
+/* Checks whether @slot's reply also stands for the ACK @operation awaits:
+ * wrapped sensors answer some commands, the firmware version among them,
+ * with the reply alone. */
+static gboolean
+goodix_reply_implies_ack (GoodixTransport *operation, GoodixResponseSlot slot)
+{
+  return goodix_wrapped (FPI_DEVICE_GOODIX53X5 (operation->dev)) &&
+         operation->phase == GOODIX_TRANSPORT_ACK && operation->response_slot == slot;
+}
+
+/* Checks whether a frame that failed to decode came over an established
+ * session, which counts towards a secure-channel restart. A GTLS frame must
+ * also have consumed its HMAC counter (@counter is its value before). */
+static gboolean
+goodix_frame_rejected_in_session (FpiDeviceGoodix53x5 *self, guint32 counter)
+{
+  if (goodix_wrapped (self))
+    return self->tls && goodix_tls_established (self->tls);
+  return self->gtls.hmac_server_counter != counter && self->gtls.state == 5;
+}
+
+/* Checks whether @cmd is a production write to a wrapped sensor. 533c has no
+ * recoverable firmware image to fall back on, so this driver never
+ * provisions it, whichever caller asks. */
+static gboolean
+goodix_cmd_refused (FpiDeviceGoodix53x5 *self, const GoodixCmd *cmd)
+{
+  return goodix_wrapped (self) &&
+         cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION &&
+         cmd->command == GOODIX_PROTO_CMD_PRODUCTION_WRITE;
+}
+
+/* Appends @payload to the category-D stream and signals its waiter. */
+static void
+goodix_mcu_publish (FpiDeviceGoodix53x5 *self, const guint8 *payload, gsize len)
+{
+  if (!self->mcu_rx)
+    self->mcu_rx = g_byte_array_new ();
+  g_byte_array_append (self->mcu_rx, payload,
+                       MIN (len, GOODIX_MCU_RX_SIZE - self->mcu_rx->len));
+  self->mcu_ready = TRUE;
+}
+
 static gboolean
 goodix_validate_ack_for_cmd (FpDevice       *dev,
                              GoodixTransport *operation,
@@ -299,6 +354,12 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
       goodix_transport_complete (operation, g_error_copy (reader->error));
       return;
     }
+  /* A TLS record is not a protocol message; the sensor never ACKs it. */
+  if (operation->cmd.tls_record)
+    {
+      goodix_transport_complete (operation, NULL);
+      return;
+    }
   operation->deadline_us = g_get_monotonic_time () + operation->ack_timeout_ms * 1000LL;
   if ((operation->cmd.category == 0 && operation->cmd.command == 0) ||
       (operation->cmd.category == 0x0a && operation->cmd.command == 4))
@@ -309,6 +370,75 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
     goodix_transport_receive (operation, operation->ack_timeout_ms);
 }
 
+/* Returns the checksum a wrapped pack header carries in its fourth byte. */
+static guint8
+goodix_pack_checksum (const guint8 *header)
+{
+  return header[0] + header[1] + header[2];
+}
+
+static void
+goodix_pack_write_header (guint8 *header, guint8 flags, gsize len)
+{
+  header[0] = flags;
+  header[1] = len & 0xff;
+  header[2] = (len >> 8) & 0xff;
+  header[3] = goodix_pack_checksum (header);
+}
+
+/* Returns the payload length a wrapped pack header announces, or FALSE when
+ * its checksum does not match. */
+static gboolean
+goodix_pack_read_header (const guint8 *header, gsize *len)
+{
+  if (goodix_pack_checksum (header) != header[3])
+    return FALSE;
+  *len = header[1] | (header[2] << 8);
+  return TRUE;
+}
+
+/* Returns @msg as one wrapped pack of kind @flags, zero-padded to whole
+ * 64-byte writes. */
+static guint8 *
+goodix_frame_wrapped (guint8 flags, const guint8 *msg, gsize msg_len,
+                      gsize *out_len)
+{
+  gsize len = (GOODIX_PACK_HEADER + msg_len + GOODIX_USB_CHUNK_SIZE - 1) /
+              GOODIX_USB_CHUNK_SIZE * GOODIX_USB_CHUNK_SIZE;
+  guint8 *framed = g_malloc0 (len);
+
+  goodix_pack_write_header (framed, flags, msg_len);
+  memcpy (framed + GOODIX_PACK_HEADER, msg, msg_len);
+  *out_len = len;
+  return framed;
+}
+
+/* Returns @msg split into 64-byte writes. Continuation chunks prepend the
+ * command byte | 1 and carry up to 63 more bytes of message data. */
+static guint8 *
+goodix_frame_direct (const guint8 *msg, gsize msg_len, gsize *out_len)
+{
+  gsize first_len = MIN (msg_len, GOODIX_USB_CHUNK_SIZE);
+  gsize total_chunks = 1 + (msg_len - first_len + 62) / 63;
+  gsize padded_len = total_chunks * GOODIX_USB_CHUNK_SIZE;
+  guint8 *chunked = g_malloc0 (padded_len);
+  gsize src_offset = first_len;
+
+  memcpy (chunked, msg, first_len);
+  for (gsize dst_offset = GOODIX_USB_CHUNK_SIZE;
+       dst_offset < padded_len; dst_offset += GOODIX_USB_CHUNK_SIZE)
+    {
+      gsize data_in_chunk = MIN (63, msg_len - src_offset);
+
+      chunked[dst_offset] = msg[0] | 1;
+      memcpy (chunked + dst_offset + 1, msg + src_offset, data_in_chunk);
+      src_offset += data_in_chunk;
+    }
+
+  *out_len = padded_len;
+  return chunked;
+}
+
 /* The ACK clock starts after OUT completion. IN stays posted during writes. */
 static void
 goodix_transport_send (GoodixTransport *operation)
@@ -316,11 +446,10 @@ goodix_transport_send (GoodixTransport *operation)
   FpDevice *dev = operation->dev;
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixCmd *cmd = &operation->cmd;
-  gsize msg_len;
-  guint8 *msg;
+  gsize msg_len, padded_len;
+  guint8 *msg, *chunked;
   FpiUsbTransfer *transfer;
   GCancellable *cancellable;
-  guint8 cmd_byte;
 
   operation->phase = GOODIX_TRANSPORT_SEND;
   operation->attempt++;
@@ -329,35 +458,23 @@ goodix_transport_send (GoodixTransport *operation)
   g_clear_pointer (&operation->cancel_source, g_source_destroy);
   g_clear_object (&operation->cancellable);
   self->command_response_ready &= ~goodix_response_bit (operation->response_slot);
-  msg = goodix_proto_build_message (cmd->category, cmd->command,
-                                    cmd->payload, cmd->payload_len,
-                                    cmd->use_checksum, &msg_len);
-  cmd_byte = msg[0];
 
-  /* The transport uses 64-byte USB writes. Continuation chunks prepend
-   * cmd_byte | 1 and carry up to 63 more bytes of message data. */
-
-  gsize first_len = MIN (msg_len, GOODIX_USB_CHUNK_SIZE);
-  gsize total_chunks = 1 + (msg_len - first_len + 62) / 63;
-  gsize padded_len = total_chunks * GOODIX_USB_CHUNK_SIZE;
-  guint8 *chunked = g_malloc0 (padded_len);
-
-  memcpy (chunked, msg, first_len);
-  gsize src_offset = first_len;
-  for (gsize dst_offset = GOODIX_USB_CHUNK_SIZE;
-       dst_offset < padded_len; dst_offset += GOODIX_USB_CHUNK_SIZE)
-    {
-      gsize data_in_chunk = MIN (63, msg_len - src_offset);
-
-      chunked[dst_offset] = cmd_byte | 1;
-      memcpy (chunked + dst_offset + 1, msg + src_offset, data_in_chunk);
-      src_offset += data_in_chunk;
-    }
-
+  if (cmd->tls_record)
+    msg = g_memdup2 (cmd->payload, msg_len = cmd->payload_len);
+  else
+    msg = goodix_proto_build_message (cmd->category, cmd->command,
+                                      cmd->payload, cmd->payload_len,
+                                      cmd->use_checksum, &msg_len);
+  if (goodix_wrapped (self))
+    chunked = goodix_frame_wrapped (cmd->tls_record ? GOODIX_PACK_TLS : GOODIX_PACK_MESSAGE,
+                                    msg, msg_len, &padded_len);
+  else
+    chunked = goodix_frame_direct (msg, msg_len, &padded_len);
   g_free (msg);
 
   transfer = fpi_usb_transfer_new (dev);
-  fpi_usb_transfer_fill_bulk_full (transfer, GOODIX_EP_OUT,
+  fpi_usb_transfer_fill_bulk_full (transfer,
+                                   goodix_wrapped (self) ? GOODIX_WRAPPED_EP_OUT : GOODIX_EP_OUT,
                                    chunked, padded_len, g_free);
   /* Native writes have no timeout. The selected action or hardware-service
    * owner supplies cancellation until this callback joins; Linux USB removal
@@ -720,12 +837,19 @@ goodix_rx_cell (GoodixTransport *operation,
                 goto receive_more;
               return;
             }
-          if (category == 2)
+          if (category == GOODIX_PROTO_CATEGORY_IMAGE)
             {
               gsize decoded_len;
               guint32 counter = self->gtls.hmac_server_counter;
-              g_autofree guint8 *decoded = goodix_crypto_gtls_decrypt_sensor_data (
-                &self->gtls, payload, payload_len, &decoded_len);
+              g_autofree guint8 *decoded = NULL;
+
+              if (!goodix_wrapped (self))
+                decoded = goodix_crypto_gtls_decrypt_sensor_data (
+                  &self->gtls, payload, payload_len, &decoded_len);
+              else if (self->tls && payload_len > GOODIX_PACK_TLS_DATA_HDR)
+                decoded = goodix_tls_decrypt (self->tls, payload + GOODIX_PACK_TLS_DATA_HDR,
+                                              payload_len - GOODIX_PACK_TLS_DATA_HDR,
+                                              &decoded_len);
               guint16 *frame = decoded ?
                                goodix_device_decode_image (decoded, decoded_len) : NULL;
 
@@ -740,8 +864,7 @@ goodix_rx_cell (GoodixTransport *operation,
                   self->image_response_failed = FALSE;
                   self->command_response_ready |= goodix_response_bit (GOODIX_RESPONSE_IMAGE);
                 }
-              else if (self->gtls.hmac_server_counter != counter &&
-                       self->gtls.state == 5)
+              else if (goodix_frame_rejected_in_session (self, counter))
                 {
                   /* Incomplete-session rejection consumes the counter but
                    * preserves raw status; only established raw failure sets it. */
@@ -781,11 +904,7 @@ goodix_rx_cell (GoodixTransport *operation,
             {
               /* Parser publication is independent of command, ACK, and GTLS
                * state. Preserve the native bounded byte stream and event. */
-              if (!self->mcu_rx)
-                self->mcu_rx = g_byte_array_new ();
-              g_byte_array_append (self->mcu_rx, payload,
-                                   MIN (payload_len, GOODIX_MCU_RX_SIZE - self->mcu_rx->len));
-              self->mcu_ready = TRUE;
+              goodix_mcu_publish (self, payload, payload_len);
               goodix_proto_rx_reset (&self->rx);
               if (goodix_transport_take_mcu (operation))
                 return;
@@ -848,6 +967,12 @@ goodix_rx_cell (GoodixTransport *operation,
                * command-2 status does not decide download success. Category F
                * signals the separate firmware event after its shared-byte copy. */
               self->command_response_ready |= goodix_response_bit (slot);
+              if (current && goodix_reply_implies_ack (current, slot))
+                {
+                  current->ack_status = GOODIX_PROTO_ACK_FLAG_VALID;
+                  goodix_transport_complete (operation, NULL);
+                  return;
+                }
               if (!current || operation->phase != GOODIX_TRANSPORT_RESPONSE ||
                   current->response_slot != slot)
                 {
@@ -963,6 +1088,98 @@ receive_more:
   goodix_rx_continue (operation);
 }
 
+/* Passes one protocol message to the direct-framing receiver as the 64-byte
+ * cells it would have arrived in, so both framings share one parser. */
+static void
+goodix_rx_message (GoodixTransport *operation, const guint8 *msg, gsize len)
+{
+  guint8 cell[GOODIX_USB_CHUNK_SIZE];
+  gsize offset = MIN (len, GOODIX_USB_CHUNK_SIZE);
+
+  goodix_rx_cell (operation, msg, offset);
+  while (offset < len)
+    {
+      gsize n = MIN (len - offset, GOODIX_USB_CHUNK_SIZE - 1);
+
+      cell[0] = msg[0] | 1;
+      memcpy (cell + 1, msg + offset, n);
+      goodix_rx_cell (operation, cell, n + 1);
+      offset += n;
+    }
+}
+
+static void
+goodix_rx_pack (GoodixTransport *operation, guint8 flags,
+                const guint8 *payload, gsize len)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (operation->dev);
+
+  switch (flags)
+    {
+    case GOODIX_PACK_MESSAGE:
+      if (len)
+        goodix_rx_message (operation, payload, len);
+      break;
+
+    case GOODIX_PACK_TLS:
+      /* Handshake records share the category-D stream and its waiter. */
+      goodix_mcu_publish (self, payload, len);
+      break;
+
+    case GOODIX_PACK_TLS_DATA:
+      {
+        /* An encrypted frame: route it as the category-2 image message. */
+        gsize msg_len;
+        g_autofree guint8 *msg = goodix_proto_build_message (
+          GOODIX_PROTO_CATEGORY_IMAGE, 0, payload, len, TRUE, &msg_len);
+
+        goodix_rx_message (operation, msg, msg_len);
+      }
+      break;
+
+    default:
+      fp_dbg ("Ignoring pack with flags 0x%02x, %zu bytes", flags, len);
+      break;
+    }
+}
+
+/* Dispatches every complete pack once @data is appended to the wrapped
+ * stream, keeping a partial one for the next transfer; drops the stream at a
+ * bad header. A pack never starts with zero, so its write padding is skipped. */
+static void
+goodix_rx_packs (GoodixTransport *operation, const guint8 *data, gsize len)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (operation->dev);
+  GByteArray *stream;
+
+  if (!self->pack_rx)
+    self->pack_rx = g_byte_array_new ();
+  stream = self->pack_rx;
+  g_byte_array_append (stream, data, len);
+
+  for (;;)
+    {
+      gsize padding = 0, length;
+
+      while (padding < stream->len && !stream->data[padding])
+        padding++;
+      g_byte_array_remove_range (stream, 0, padding);
+      if (stream->len < GOODIX_PACK_HEADER)
+        return;
+      if (!goodix_pack_read_header (stream->data, &length))
+        {
+          fp_warn ("Dropping %u wrapped bytes with a bad pack header", stream->len);
+          g_byte_array_set_size (stream, 0);
+          return;
+        }
+      if (stream->len < GOODIX_PACK_HEADER + length)
+        return;
+      goodix_rx_pack (operation, stream->data[0],
+                      stream->data + GOODIX_PACK_HEADER, length);
+      g_byte_array_remove_range (stream, 0, GOODIX_PACK_HEADER + length);
+    }
+}
+
 static void
 goodix_reader_joined (GoodixReader *reader)
 {
@@ -997,7 +1214,7 @@ goodix_reader_start (FpDevice *dev)
     return;
   reader->pending = TRUE;
   transfer = fpi_usb_transfer_new (dev);
-  fpi_usb_transfer_fill_bulk (transfer, GOODIX_EP_IN, GOODIX_USB_READ_SIZE);
+  fpi_usb_transfer_fill_bulk (transfer, goodix_wrapped (self) ? GOODIX_WRAPPED_EP_IN : GOODIX_EP_IN, GOODIX_USB_READ_SIZE);
   fpi_usb_transfer_submit (transfer, 0, reader->cancel, goodix_rx_cb, reader);
 }
 
@@ -1039,7 +1256,9 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
    * cells, gated by nonzero received length and first byte. Only transferred
    * bytes are available here; never parse the unfilled allocation suffix. */
   operation->processing_cells = TRUE;
-  if (transfer->actual_length && transfer->buffer[0])
+  if (goodix_wrapped (self))
+    goodix_rx_packs (operation, transfer->buffer, transfer->actual_length);
+  else if (transfer->actual_length && transfer->buffer[0])
     for (gsize offset = 0; offset < transfer->actual_length; offset += GOODIX_USB_CHUNK_SIZE)
       goodix_rx_cell (operation, transfer->buffer + offset,
                       MIN (GOODIX_USB_CHUNK_SIZE, transfer->actual_length - offset));
@@ -1107,6 +1326,8 @@ goodix_transport_invalidate (FpDevice *dev)
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
+  if (self->pack_rx)
+    g_byte_array_set_size (self->pack_rx, 0);
   self->reply_valid = FALSE;
   self->rx_idle_partial = FALSE;
   self->pending_fdt.event.pending = FALSE;
@@ -1190,6 +1411,14 @@ goodix_transport_command (FpDevice                     *dev,
       GoodixTransportResult result = {0};
       done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
              "A device transport operation is already active"), data);
+      return;
+    }
+
+  if (goodix_cmd_refused (self, &request->cmd))
+    {
+      GoodixTransportResult result = {0};
+      done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
+             "Refusing to write production data to a wrapped sensor"), data);
       return;
     }
 

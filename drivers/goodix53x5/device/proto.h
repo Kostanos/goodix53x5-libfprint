@@ -25,6 +25,11 @@
  * cmd_byte = category<<4 | command<<1
  * checksum = (0xAA - sum(all_bytes)) & 0xFF, or 0x88 for handshake */
 
+/* Message selectors more than one module names. */
+#define GOODIX_PROTO_CATEGORY_IMAGE       0x02
+#define GOODIX_PROTO_CATEGORY_PRODUCTION  0x0e
+#define GOODIX_PROTO_CMD_PRODUCTION_WRITE 0x1
+
 /* Max reassembly buffer (encrypted image can be ~15KB) */
 #define GOODIX_RX_BUF_SIZE (16 * 1024)
 

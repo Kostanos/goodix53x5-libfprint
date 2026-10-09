@@ -35,7 +35,10 @@
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
+/* Overridable for running the driver unprivileged during development. */
+#ifndef GOODIX_PSK_STATE_FILE
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
+#endif
 
 /* ========================================================================
  * Hardware ownership
@@ -721,6 +724,88 @@ goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     }
 }
 
+/* Wrapped sensors: standard TLS 1.2-PSK with the sensor as client. Records
+ * travel as raw TLS packs; the same retry policy as GTLS applies. */
+typedef enum {
+  GOODIX_TLS_REQUEST,
+  GOODIX_TLS_RECV,
+  GOODIX_TLS_STEP,
+  GOODIX_TLS_SENT,
+  GOODIX_TLS_ESTABLISHED,
+  GOODIX_TLS_NUM_STATES,
+} GoodixTlsState;
+
+static void
+goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  g_autoptr(GError) error = NULL;
+
+  if (g_cancellable_set_error_if_cancelled (goodix_session_io_cancellable (dev), &error))
+    {
+      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+      return;
+    }
+
+  switch ((GoodixTlsState) fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_TLS_REQUEST:
+      goodix_transport_reset_mcu (dev);
+      g_clear_pointer (&self->tls, goodix_tls_free);
+      self->tls = goodix_tls_new (self->psk, GOODIX_PSK_LEN, &error);
+      if (!self->tls)
+        {
+          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+          return;
+        }
+      goodix_cmd_tls_request (ssm, dev);
+      break;
+
+    case GOODIX_TLS_RECV:
+      goodix_recv_mcu (ssm, dev, 2000, 0);
+      break;
+
+    case GOODIX_TLS_STEP:
+      {
+        g_autoptr(GBytes) out = NULL;
+        const guint8 *in = NULL;
+        gsize in_len = 0;
+
+        if (self->mcu_reply)
+          in = g_bytes_get_data (self->mcu_reply, &in_len);
+        if (!goodix_tls_handshake (self->tls, in, in_len, &out, &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+        if (out)
+          {
+            gsize out_len;
+            const guint8 *data = g_bytes_get_data (out, &out_len);
+
+            goodix_cmd_send_tls_record (ssm, dev, data, out_len);
+          }
+        else
+          {
+            fpi_ssm_next_state (ssm);
+          }
+      }
+      break;
+
+    case GOODIX_TLS_SENT:
+      fpi_ssm_jump_to_state (ssm, goodix_tls_established (self->tls) ?
+                             GOODIX_TLS_ESTABLISHED : GOODIX_TLS_RECV);
+      break;
+
+    case GOODIX_TLS_ESTABLISHED:
+      goodix_cmd_tls_established (ssm, dev);
+      break;
+
+    case GOODIX_TLS_NUM_STATES:
+      g_assert_not_reached ();
+    }
+}
+
 static void
 goodix_gtls_attempt_done (FpiSsm *attempt, FpDevice *dev, GError *error)
 {
@@ -781,7 +866,9 @@ goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
     }
   g_clear_error (&retry->error);
   retry->attempt++;
-  FpiSsm *attempt = fpi_ssm_new (dev, goodix_gtls_ssm_handler, GOODIX_GTLS_NUM_STATES);
+  FpiSsm *attempt = goodix_wrapped (FPI_DEVICE_GOODIX53X5 (dev)) ?
+                    fpi_ssm_new (dev, goodix_tls_ssm_handler, GOODIX_TLS_NUM_STATES) :
+                    fpi_ssm_new (dev, goodix_gtls_ssm_handler, GOODIX_GTLS_NUM_STATES);
 
   fpi_ssm_set_data (attempt, ssm, NULL);
   fpi_ssm_start (attempt, goodix_gtls_attempt_done);
@@ -912,7 +999,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         GError *error = NULL;
 
         if (!g_usb_device_claim_interface (
-                fpi_device_get_usb_device (dev), GOODIX_USB_INTERFACE,
+                fpi_device_get_usb_device (dev), GOODIX_USB_INTERFACE (dev),
                 G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER, &error))
           {
             fpi_ssm_mark_failed (ssm, error);
@@ -991,8 +1078,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_READ_PSK_HASH:
-      /* read_psk_hash via production_read(0xB003) */
-      goodix_cmd_production_read (ssm, dev, 0xB003);
+      goodix_cmd_read_psk_hash (ssm, dev);
       break;
 
     case GOODIX_OPEN_WRITE_PSK:
@@ -1002,8 +1088,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         const guint8 *psk_data;
         gsize psk_data_len;
 
-        if (!goodix_cmd_parse_production_read_reply (dev, 0xB003,
-                                                     &psk_data, &psk_data_len))
+        if (!goodix_cmd_parse_psk_hash_reply (dev, &psk_data, &psk_data_len))
           {
             fpi_ssm_mark_failed (ssm,
                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -1028,6 +1113,17 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
               return;
             }
         }
+
+        /* 533c returns no firmware in APP mode, so a failed write could
+         * not be recovered from. It ships with the all-zero PSK. */
+        if (goodix_wrapped (self))
+          {
+            fpi_ssm_mark_failed (
+              ssm,
+              fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                        "Sensor PSK does not match; refusing to provision a wrapped sensor"));
+            return;
+          }
 
         if (self->psk_imported)
           {
@@ -1069,7 +1165,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           }
 
         /* Re-read the PSK hash to verify the write before GTLS */
-        goodix_cmd_production_read (ssm, dev, 0xB003);
+        goodix_cmd_read_psk_hash (ssm, dev);
       }
       break;
 
@@ -1084,9 +1180,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             guint8 expected_hash[32];
             gsize hash_len = 32;
 
-            if (!goodix_cmd_parse_production_read_reply (dev, 0xB003,
-                                                         &psk_data,
-                                                         &psk_data_len))
+            if (!goodix_cmd_parse_psk_hash_reply (dev, &psk_data, &psk_data_len))
               {
                 fpi_ssm_mark_failed (ssm,
                                      fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -1121,7 +1215,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       {
         self->open_ref_powered = FALSE;
 
-        fp_info ("GTLS handshake completed");
+        fp_info ("%s handshake completed", goodix_wrapped (self) ? "TLS" : "GTLS");
         goodix_cmd_restore_config (ssm, dev, goodix_open_native_result);
       }
       break;
@@ -1208,7 +1302,7 @@ goodix_cleanup_failed_open (FpDevice *dev)
 
   if (self->usb_interface_claimed)
     {
-      if (!g_usb_device_release_interface (usb_dev, GOODIX_USB_INTERFACE, 0,
+      if (!g_usb_device_release_interface (usb_dev, GOODIX_USB_INTERFACE (dev), 0,
                                            &cleanup_error))
         fp_warn ("Failed to release USB interface after open failure: %s",
                  cleanup_error->message);
@@ -1254,7 +1348,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
           if (self->usb_interface_claimed)
             {
               g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                              GOODIX_USB_INTERFACE, 0, NULL);
+                                              GOODIX_USB_INTERFACE (dev), 0, NULL);
               self->usb_interface_claimed = FALSE;
             }
           self->open_usb_reset_required = TRUE;
@@ -1339,7 +1433,7 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
       /* This is expected to fail with EINVAL after an S4 reset because the
        * kernel already dropped the claim; recovery proceeds either way. */
       if (!g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                           GOODIX_USB_INTERFACE,
+                                           GOODIX_USB_INTERFACE (dev),
                                            0, &release_error))
         fp_dbg ("Releasing stale USB interface before reinit failed "
                 "(expected after S4 reset): %s", release_error->message);
@@ -1434,7 +1528,7 @@ goodix_session_close_joined (FpDevice *dev, gpointer data)
   self->psk_imported = FALSE;
 
   g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                  GOODIX_USB_INTERFACE, 0, &error);
+                                  GOODIX_USB_INTERFACE (dev), 0, &error);
   self->usb_interface_claimed = FALSE;
 
   fpi_device_close_complete (dev, error);
@@ -1580,13 +1674,13 @@ goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
           /* A stale release can return EINVAL after reset-resume. The fresh
           * claim with kernel-driver detach establishes actual ownership. */
           if (!g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                               GOODIX_USB_INTERFACE, 0, &error))
+                                               GOODIX_USB_INTERFACE (dev), 0, &error))
             fp_dbg ("Releasing USB interface before warm resume: %s", error->message);
           self->usb_interface_claimed = FALSE;
           g_clear_error (&error);
         }
       if (!g_usb_device_claim_interface (fpi_device_get_usb_device (dev),
-                                         GOODIX_USB_INTERFACE,
+                                         GOODIX_USB_INTERFACE (dev),
                                          G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER,
                                          &error))
         {

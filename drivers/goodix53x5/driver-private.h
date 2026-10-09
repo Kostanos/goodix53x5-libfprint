@@ -26,15 +26,22 @@
 #include "goodix53x5.h"
 #include "device/proto.h"
 #include "device/crypto.h"
+#include "device/tls.h"
 #include "device/debug.h"
 #include "device/base.h"
 #include "device/health.h"
 #include "milan/match/match.h"
 
+/* 27c6:533c (GF5288 + GM168SEC) shares the Milan silicon but speaks the
+ * wrapped framing on interface 0 and secures images with real TLS 1.2-PSK
+ * instead of GTLS. id_table driver_data selects it. */
+#define GOODIX_VARIANT_WRAPPED 1
+
 /* USB interface claimed at open and released at close — interface 1,
- * CDC Data class. Endpoint and chunking details live in the transport
- * module. */
-#define GOODIX_USB_INTERFACE 1
+ * CDC Data class, or interface 0 on wrapped sensors. Endpoint and chunking
+ * details live in the transport module. */
+#define GOODIX_USB_INTERFACE(dev) \
+  (goodix_wrapped (FPI_DEVICE_GOODIX53X5 (dev)) ? 0 : 1)
 
 /* Sensor dimensions */
 #define GOODIX_SENSOR_WIDTH 108
@@ -140,6 +147,12 @@ struct _FpiDeviceGoodix53x5
   gboolean      service_draining;
   void (*service_joined) (FpDevice *dev, gpointer data);
   gpointer service_joined_data;
+
+  /* Wrapped receive stream, reassembled into whole packs across transfers. */
+  GByteArray   *pack_rx;
+  /* The TLS session wrapped sensors' images are decrypted through, replaced
+   * at every handshake; GTLS sensors use gtls instead. */
+  GoodixTls    *tls;
 
   /* GTLS session (persists across captures) */
   GoodixGtlsCtx gtls;
@@ -295,3 +308,11 @@ struct _FpiDeviceGoodix53x5
   gint                              pending_enroll_stage;
   GError                           *pending_enroll_error;
 };
+
+/* Checks whether the sensor speaks the wrapped framing and TLS-PSK; fixed by
+ * its USB id, so valid before open. */
+static inline gboolean
+goodix_wrapped (FpiDeviceGoodix53x5 *self)
+{
+  return fpi_device_get_driver_data (FP_DEVICE (self)) == GOODIX_VARIANT_WRAPPED;
+}
