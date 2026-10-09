@@ -283,6 +283,7 @@ const GoodixVariant goodix_variant_wrapped = {
   /* 533c returns no firmware in APP mode, so nothing could restore it. */
   .provisionable = FALSE,
   .reply_implies_ack = TRUE,
+  .channel_restart_disarms = TRUE,
   .read_psk_hash = goodix_read_psk_hash_wrapped,
   .new_channel_attempt = goodix_tls_attempt_new,
   .frame = goodix_frame_wrapped,

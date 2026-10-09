@@ -53,6 +53,8 @@ typedef enum {
   GOODIX_SCAN_COORD_RESTORE_CONFIG,
   GOODIX_SCAN_COORD_ESD,
   GOODIX_SCAN_COORD_ESD_DONE,
+  GOODIX_SCAN_COORD_CHANNEL_REARM,
+  GOODIX_SCAN_COORD_CHANNEL_REARM_DONE,
   GOODIX_SCAN_COORD_DEACTIVATE_EC,
   GOODIX_SCAN_COORD_DEACTIVATE_EC_DONE,
   GOODIX_SCAN_COORD_WAIT_CPU,
@@ -287,6 +289,12 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
   if (error)
     {
       goodix_scan_request_stop (data, error);
+      return;
+    }
+  if (goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->channel_restart_disarms)
+    {
+      data->dispatching = TRUE;
+      fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_CHANNEL_REARM);
       return;
     }
   fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
@@ -788,7 +796,18 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       goodix_cmd_ec_control (ssm, dev, FALSE);
       break;
 
+    case GOODIX_SCAN_COORD_CHANNEL_REARM:
+      /* Arm again in the mode the restarted session dropped. */
+      if (fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_UP)
+        goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
+      else if (fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_DOWN)
+        goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
+      else
+        fpi_ssm_next_state (ssm);
+      break;
+
     case GOODIX_SCAN_COORD_ESD_DONE:
+    case GOODIX_SCAN_COORD_CHANNEL_REARM_DONE:
     case GOODIX_SCAN_COORD_DEACTIVATE_EC_DONE:
       data->dispatching = FALSE;
       fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);

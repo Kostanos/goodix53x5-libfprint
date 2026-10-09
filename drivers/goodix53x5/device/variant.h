@@ -45,6 +45,9 @@ typedef struct
   gboolean    provisionable;
   /* TRUE where some commands are answered with the reply alone, no ACK. */
   gboolean    reply_implies_ack;
+  /* TRUE where starting a new secure-channel session drops the
+   * finger-detect arm, so a scan arms again after a channel restart. */
+  gboolean    channel_restart_disarms;
 
   /* Requests the PSK hash; goodix_cmd_parse_psk_hash_reply() reads it. */
   void              (*read_psk_hash) (FpiSsm *ssm, FpDevice *dev);

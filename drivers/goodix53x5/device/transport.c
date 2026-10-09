@@ -1097,6 +1097,7 @@ const GoodixVariant goodix_variant_direct = {
   .psk_hash_type = 0xB003,
   .provisionable = TRUE,
   .reply_implies_ack = FALSE,
+  .channel_restart_disarms = FALSE,
   .read_psk_hash = goodix_read_psk_hash_direct,
   .new_channel_attempt = goodix_gtls_attempt_new,
   .frame = goodix_frame_direct,
