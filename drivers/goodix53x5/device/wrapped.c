@@ -206,12 +206,12 @@ typedef enum {
   GOODIX_TLS_RECV,
   GOODIX_TLS_STEP,
   GOODIX_TLS_SENT,
-  GOODIX_TLS_ESTABLISHED,
   GOODIX_TLS_NUM_STATES,
 } GoodixTlsState;
 
 /* Runs one TLS handshake attempt, the sensor being the client; fails when it
- * sends a record OpenSSL rejects or a reply takes over 2 s. */
+ * sends a record OpenSSL rejects, a reply takes over 2 s, or the handshake
+ * runs out of steps. */
 static void
 goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 {
@@ -260,12 +260,11 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case GOODIX_TLS_SENT:
-      fpi_ssm_jump_to_state (ssm, goodix_tls_established (self->tls) ?
-                             GOODIX_TLS_ESTABLISHED : GOODIX_TLS_RECV);
-      break;
-
-    case GOODIX_TLS_ESTABLISHED:
-      goodix_cmd_tls_established (ssm, dev);
+      /* The Geneva handshake sends nothing after the last record. */
+      if (goodix_tls_established (self->tls))
+        fpi_ssm_mark_completed (ssm);
+      else
+        fpi_ssm_jump_to_state (ssm, GOODIX_TLS_RECV);
       break;
 
     case GOODIX_TLS_NUM_STATES:

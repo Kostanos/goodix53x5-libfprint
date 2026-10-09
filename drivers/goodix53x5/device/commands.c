@@ -342,14 +342,6 @@ goodix_cmd_tls_request (FpiSsm *ssm, FpDevice *dev)
 }
 
 void
-goodix_cmd_tls_established (FpiSsm *ssm, FpDevice *dev)
-{
-  guint8 payload[2] = { 0, 0 };
-
-  goodix_run_cmd (ssm, dev, 0xD, 0x2, payload, sizeof (payload), FALSE);
-}
-
-void
 goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev, GBytes *record)
 {
   GoodixCommandCompletion *completion = g_new0 (GoodixCommandCompletion, 1);

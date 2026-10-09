@@ -23,7 +23,8 @@ void       goodix_tls_free (GoodixTls *tls);
 
 /* Advances the handshake with the sensor's records in @in, which may be
  * empty; @out receives the records to send back, or NULL. Fails, and
- * leaves the session unusable, when the sensor's records are rejected. */
+ * leaves the session unusable, when the sensor's records are rejected or
+ * the handshake takes more than ten calls. */
 gboolean   goodix_tls_handshake (GoodixTls    *tls,
                                  const guint8 *in,
                                  gsize         in_len,

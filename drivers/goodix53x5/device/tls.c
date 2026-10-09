@@ -19,6 +19,8 @@
 /* The suite the sensor negotiates with a stock `openssl s_server -psk`. */
 #define GOODIX_TLS_CIPHER "PSK-AES128-CBC-SHA256"
 #define GOODIX_TLS_MAX_PSK 64
+/* McuStartTls gives up after this many handshake calls. */
+#define GOODIX_TLS_MAX_HANDSHAKE_CALLS 10
 
 struct _GoodixTls
 {
@@ -28,6 +30,7 @@ struct _GoodixTls
   BIO     *out;  /* records for the sensor; owned by ssl */
   guint8   psk[GOODIX_TLS_MAX_PSK];
   gsize    psk_len;
+  guint    handshake_calls;
 };
 
 static unsigned int
@@ -134,6 +137,13 @@ goodix_tls_handshake (GoodixTls    *tls,
   int ret;
 
   *out = NULL;
+  if (++tls->handshake_calls > GOODIX_TLS_MAX_HANDSHAKE_CALLS)
+    {
+      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                   "TLS handshake did not finish in %d steps",
+                   GOODIX_TLS_MAX_HANDSHAKE_CALLS);
+      return FALSE;
+    }
   if (in_len && BIO_write (tls->in, in, in_len) != (int) in_len)
     {
       goodix_tls_set_error (error, "input");

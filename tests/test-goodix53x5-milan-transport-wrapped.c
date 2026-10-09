@@ -239,6 +239,28 @@ test_wrapped_tls_truncated_record (void)
   goodix_tls_free (tls);
 }
 
+/* A sensor that never finishes the handshake fails it after ten calls, as
+ * McuStartTls does. */
+static void
+test_wrapped_tls_handshake_limit (void)
+{
+  const guint8 psk[GOODIX_PSK_LEN] = { 0 };
+  GoodixTls *tls = goodix_tls_new (psk, sizeof (psk), NULL);
+  g_autoptr(GError) error = NULL;
+
+  for (guint i = 0; i < 10; i++)
+    {
+      g_autoptr(GBytes) out = NULL;
+
+      g_assert_true (goodix_tls_handshake (tls, NULL, 0, &out, &error));
+      g_assert_null (out);
+    }
+  g_autoptr(GBytes) out = NULL;
+  g_assert_false (goodix_tls_handshake (tls, NULL, 0, &out, &error));
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO);
+  goodix_tls_free (tls);
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -252,4 +274,6 @@ register_wrapped_tests (void)
                    test_wrapped_restart_rearm_yields_to_stop);
   g_test_add_func ("/goodix53x5/wrapped/tls-truncated-record",
                    test_wrapped_tls_truncated_record);
+  g_test_add_func ("/goodix53x5/wrapped/tls-handshake-limit",
+                   test_wrapped_tls_handshake_limit);
 }

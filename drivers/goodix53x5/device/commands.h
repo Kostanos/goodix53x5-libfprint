@@ -86,7 +86,6 @@ gboolean goodix_cmd_parse_psk_hash_reply (FpDevice      *dev,
 void goodix_cmd_preset_read (FpiSsm *ssm, FpDevice *dev, guint32 slot,
                              guint32 length);
 void goodix_cmd_tls_request (FpiSsm *ssm, FpDevice *dev);
-void goodix_cmd_tls_established (FpiSsm *ssm, FpDevice *dev);
 /* Sends a TLS record to the sensor; completes once written, as the sensor
  * never ACKs one. */
 void goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev, GBytes *record);
