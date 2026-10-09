@@ -256,15 +256,6 @@ goodix_deadline_remaining (gint64 deadline_us)
   return remaining > 0 ? (guint) ((remaining + 999) / 1000) : 0;
 }
 
-/* Checks whether @slot's reply also stands for the ACK @operation awaits,
- * on a variant that answers some commands with the reply alone. */
-static gboolean
-goodix_reply_implies_ack (GoodixTransport *operation, GoodixResponseSlot slot)
-{
-  return goodix_variant (FPI_DEVICE_GOODIX53X5 (operation->dev))->reply_implies_ack &&
-         operation->phase == GOODIX_TRANSPORT_ACK && operation->response_slot == slot;
-}
-
 /* Checks whether @cmd is a preset-slot read: e4 with a length, a zero
  * offset, a slot and a zero word. A PSK write may also use e4, but its
  * payload is a fragment header and data, never this. */
@@ -493,6 +484,15 @@ goodix_transport_expired (FpDevice *dev, gpointer data)
   GoodixTransport *operation = data;
 
   operation->timer = NULL;
+  if (operation->phase == GOODIX_TRANSPORT_ACK && operation->expect_data &&
+      goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->ack_timeout_waits_for_data)
+    {
+      g_autofree gchar *what = goodix_transport_describe (operation);
+
+      fp_dbg ("No ACK for %s; waiting for its data", what);
+      goodix_transport_ack (operation);
+      return;
+    }
   goodix_transport_complete (operation,
                             g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
                                                  "Receive deadline expired"));
@@ -723,6 +723,17 @@ goodix_transport_ack (GoodixTransport *operation)
     }
 }
 
+/* Requests a new secure-channel session that arms finger-down, as the
+ * sensor asked; a restart already running stands for it. */
+static void
+goodix_request_reconnect (FpiDeviceGoodix53x5 *self)
+{
+  fp_info ("Sensor requested a new %s session", goodix_variant (self)->channel_name);
+  self->reconnect_requested = TRUE;
+  if (!self->gtls_restart_active)
+    self->gtls_restart_pending = TRUE;
+}
+
 void
 goodix_rx_cell (GoodixTransport *operation,
                 const guint8    *buffer,
@@ -832,6 +843,17 @@ goodix_rx_cell (GoodixTransport *operation,
                 goto receive_more;
               return;
             }
+          if (category == 0x0d && command == 0 &&
+              goodix_variant (self)->d0_requests_reconnect)
+            {
+              goodix_request_reconnect (self);
+              goodix_proto_rx_reset (&self->rx);
+              if (operation->phase == GOODIX_TRANSPORT_EVENT)
+                goodix_transport_complete (operation, NULL);
+              else
+                goto receive_more;
+              return;
+            }
           if (category == 0x0d)
             {
               /* Parser publication is independent of command, ACK, and GTLS
@@ -902,12 +924,6 @@ goodix_rx_cell (GoodixTransport *operation,
                * command-2 status does not decide download success. Category F
                * signals the separate firmware event after its shared-byte copy. */
               self->command_response_ready |= goodix_response_bit (slot);
-              if (current && goodix_reply_implies_ack (current, slot))
-                {
-                  current->ack_status = GOODIX_PROTO_ACK_FLAG_VALID;
-                  goodix_transport_complete (operation, NULL);
-                  return;
-                }
               if (!current || operation->phase != GOODIX_TRANSPORT_RESPONSE ||
                   current->response_slot != slot)
                 {
@@ -1150,10 +1166,11 @@ const GoodixVariant goodix_variant_direct = {
   .initial_reset_requests_irq = FALSE,
   .psk_hash_type = 0xB003,
   .provisionable = TRUE,
-  .reply_implies_ack = FALSE,
+  .ack_timeout_waits_for_data = FALSE,
   .channel_restart_disarms = FALSE,
   .restart_on_first_image_error = FALSE,
   .ack_reports_config_loss = FALSE,
+  .d0_requests_reconnect = FALSE,
   .command_budget = goodix_direct_command_budget,
   .read_psk_hash = goodix_read_psk_hash_direct,
   .new_channel_attempt = goodix_gtls_attempt_new,
@@ -1303,6 +1320,7 @@ goodix_transport_invalidate (FpDevice *dev)
   self->image_response_failed = FALSE;
   self->image_error_history = FALSE;
   self->gtls_restart_pending = FALSE;
+  self->reconnect_requested = FALSE;
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);

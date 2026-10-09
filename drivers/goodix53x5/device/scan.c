@@ -806,7 +806,14 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_CHANNEL_REARM:
-      /* Arm again in the mode the restarted session dropped. */
+      /* A reconnect the sensor asked for always arms finger-down, as the
+       * vendor's handler does; otherwise arm again in the mode the restarted
+       * session dropped. */
+      if (self->reconnect_requested)
+        {
+          self->reconnect_requested = FALSE;
+          fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+        }
       if (fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_UP)
         goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
       else if (fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_DOWN)

@@ -333,10 +333,11 @@ const GoodixVariant goodix_variant_wrapped = {
   .psk_hash_type = GOODIX_WRAPPED_PSK_HASH_TYPE,
   /* 533c returns no firmware in APP mode, so nothing could restore it. */
   .provisionable = FALSE,
-  .reply_implies_ack = TRUE,
+  .ack_timeout_waits_for_data = TRUE,
   .channel_restart_disarms = TRUE,
   .restart_on_first_image_error = TRUE,
   .ack_reports_config_loss = TRUE,
+  .d0_requests_reconnect = TRUE,
   .command_budget = goodix_wrapped_command_budget,
   .read_psk_hash = goodix_read_psk_hash_wrapped,
   .new_channel_attempt = goodix_tls_attempt_new,

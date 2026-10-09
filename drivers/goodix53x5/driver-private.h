@@ -202,6 +202,10 @@ struct _FpiDeviceGoodix53x5
    * whose ACKs say so; cleared by the next configuration download. The scan
    * restores the configuration before it waits for a finger again. */
   gboolean config_lost;
+  /* Set when the sensor asks for a new secure channel with a D0 message, on
+   * a variant that sends one; the scan's channel restart then arms
+   * finger-down, as the vendor's reconnect handler does. */
+  gboolean reconnect_requested;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */

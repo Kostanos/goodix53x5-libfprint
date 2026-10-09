@@ -380,6 +380,8 @@ typedef struct
   /* Firmware-version reads that time out before one is answered. */
   guint       silent_firmware_reads;
   gboolean    foreign_psk;
+  /* The firmware read gets its reply but never its ACK. */
+  gboolean    unacked_firmware;
 } WrappedOpen;
 
 /* Answers the read pending for io.command: its ACK first, then its reply. */
@@ -401,6 +403,13 @@ wrapped_open_answer (const WrappedOpen *sensor, gboolean *acked, guint *firmware
       (*firmware_reads)++;
       fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
                                              "Silent firmware read"));
+      return;
+    }
+  if (!*acked && io.command == 0xa8 && sensor->unacked_firmware)
+    {
+      *acked = TRUE;
+      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                             "No ACK"));
       return;
     }
   if (!*acked)
@@ -491,6 +500,20 @@ static void
 test_wrapped_open_order (void)
 {
   const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
+  g_autoptr(GError) error = NULL;
+  g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
+
+  g_assert_no_error (error);
+  g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),e4,(16:20),a2,(2:05),82,(5:00),");
+}
+
+/* A missing ACK only costs its wait: the firmware reply that follows still
+ * completes the read, which is not sent again. */
+static void
+test_wrapped_open_unacked_reply (void)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016",
+                               .unacked_firmware = TRUE };
   g_autoptr(GError) error = NULL;
   g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
 
@@ -665,6 +688,31 @@ test_wrapped_command_budgets (void)
   g_clear_object (&action_cancel_token);
 }
 
+/* A D0 message from a 533c asks for a new TLS session: it requests a channel
+ * restart that arms finger-down, and is not taken as channel bytes. On 53x5
+ * the same message is GTLS channel data. */
+static void
+test_wrapped_d0_requests_reconnect (void)
+{
+  const guint8 d0[2] = { 0 };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(FpDevice) direct = NULL;
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  receive_message (dev, 0xd, 0, d0, sizeof (d0));
+  g_assert_true (self->reconnect_requested);
+  g_assert_true (self->gtls_restart_pending);
+  g_assert_true (!self->mcu_rx || self->mcu_rx->len == 0);
+  g_clear_object (&action_cancel_token);
+
+  direct = fixture_device_new ();
+  receive_message (direct, 0xd, 0, d0, sizeof (d0));
+  g_assert_false (FPI_DEVICE_GOODIX53X5 (direct)->reconnect_requested);
+  g_assert_false (FPI_DEVICE_GOODIX53X5 (direct)->gtls_restart_pending);
+  g_assert_cmpuint (FPI_DEVICE_GOODIX53X5 (direct)->mcu_rx->len, ==, sizeof (d0));
+  g_clear_object (&action_cancel_token);
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -684,6 +732,7 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/first-image-error-restarts",
                    test_wrapped_first_image_error_restarts);
   g_test_add_func ("/goodix53x5/wrapped/open-order", test_wrapped_open_order);
+  g_test_add_func ("/goodix53x5/wrapped/open-unacked-reply", test_wrapped_open_unacked_reply);
   g_test_add_func ("/goodix53x5/wrapped/open-foreign-firmware",
                    test_wrapped_open_foreign_firmware);
   g_test_add_func ("/goodix53x5/wrapped/open-unreadable-firmware",
@@ -693,4 +742,6 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/ack-reports-config-loss",
                    test_wrapped_ack_reports_config_loss);
   g_test_add_func ("/goodix53x5/wrapped/command-budgets", test_wrapped_command_budgets);
+  g_test_add_func ("/goodix53x5/wrapped/d0-requests-reconnect",
+                   test_wrapped_d0_requests_reconnect);
 }

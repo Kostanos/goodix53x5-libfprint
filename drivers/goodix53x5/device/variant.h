@@ -56,11 +56,16 @@ typedef struct
   /* FALSE where a failed PSK or production write could not be recovered
    * from, so the driver never writes one. */
   gboolean    provisionable;
-  /* TRUE where some commands are answered with the reply alone, no ACK. */
-  gboolean    reply_implies_ack;
+  /* TRUE where an ACK that does not come in time is not an error for a
+   * command that expects data: the wait moves on to the data, as the
+   * vendor's _IoHubExec does. FALSE retries the command. */
+  gboolean    ack_timeout_waits_for_data;
   /* TRUE where starting a new secure-channel session drops the
    * finger-detect arm, so a scan arms again after a channel restart. */
   gboolean    channel_restart_disarms;
+  /* TRUE where a D0 message from the sensor asks for a new secure-channel
+   * session rather than carrying channel bytes. */
+  gboolean    d0_requests_reconnect;
   /* TRUE where ACK flag 0x02, on any command, means the sensor lost its
    * configuration and needs it downloaded again. */
   gboolean    ack_reports_config_loss;

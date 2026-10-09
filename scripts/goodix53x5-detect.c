@@ -55,10 +55,6 @@ typedef struct
   /* Returns the next protocol message from the sensor. */
   GByteArray *(*receive) (Probe   *probe,
                           GError **error);
-  /* TRUE where some commands are answered with the reply alone. */
-  gboolean      reply_implies_ack;
-  /* TRUE where the ping may go unanswered. */
-  gboolean      ping_may_be_silent;
   /* Bytes of the ping's zero payload. */
   gsize         ping_payload_length;
   guint8        reset_payload[2];
@@ -508,8 +504,6 @@ static const ProbeLayout probe_layouts[] = {
     .ep_in = 0x83,
     .frame = frame_wrapped,
     .receive = receive_wrapped_message,
-    .reply_implies_ack = TRUE,
-    .ping_may_be_silent = TRUE,
     .ping_payload_length = 4,
     .reset_payload = { 0x05, 0x14 },
     .reset_replies = TRUE,
@@ -564,8 +558,6 @@ run_command (Probe        *probe,
     return NULL;
   if (!is_ack_for (first, command_byte))
     {
-      if (probe->layout->reply_implies_ack && expect_reply)
-        return g_steal_pointer (&first);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
                    "Invalid ACK for Goodix command 0x%02x", command_byte);
       return NULL;
@@ -744,16 +736,6 @@ finish_report (ProbeReport *report,
                                       cleanup_error->message);
 }
 
-/* Checks whether a ping that failed with @error just went unanswered, which
- * the layout allows. */
-static gboolean
-is_silent_ping (const Probe  *probe,
-                const GError *error)
-{
-  return probe->layout->ping_may_be_silent &&
-         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT);
-}
-
 static ProbeResult
 probe_device (GUsbDevice  *device,
               ProbeReport *report)
@@ -798,9 +780,7 @@ probe_device (GUsbDevice  *device,
 
   reply = run_command (&probe, 0x00, 0x00, ping_payload,
                        probe.layout->ping_payload_length, FALSE, &error);
-  if (!reply && is_silent_ping (&probe, error))
-    g_clear_error (&error);
-  else if (!reply)
+  if (!reply)
     goto out;
   protocol_started = TRUE;
 
