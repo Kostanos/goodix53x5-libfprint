@@ -4,10 +4,10 @@
 reverse-engineered and validated byte for byte.**
 
 This out-of-tree libfprint driver supports Goodix HTK32 USB fingerprint sensors
-with IDs `27c6:5335`, `27c6:5385`, and `27c6:5395`. It implements the sensor
-protocol, image processing, enrollment, matching, anti-fake processing, and
-adaptive template updates without requiring Windows or proprietary Goodix
-binaries at runtime.
+with IDs `27c6:5335`, `27c6:533c`, `27c6:5385`, and `27c6:5395`. It implements
+the sensor protocol, image processing, enrollment, matching, anti-fake
+processing, and adaptive template updates without requiring Windows or
+proprietary Goodix binaries at runtime.
 
 > [!IMPORTANT]
 > All development in this repository was performed with AI assistance. The
@@ -21,6 +21,12 @@ The project is currently validated on a **Dell XPS 13 9305** with a
 `27c6:5335` sensor. IDs `27c6:5385` and `27c6:5395` are registered by the driver
 but have not received the same hardware validation. Check your sensor's ID with
 `lsusb -d 27c6:`.
+
+`27c6:533c` in the **Dell XPS 13 9310** is the same chip behind a GM168SEC
+secure element, with its own USB framing and TLS 1.2-PSK instead of GTLS. It is
+tested on one XPS 13 9310 (open, enrollment, matching and rejection). The
+driver never writes a PSK to it, so the sensor must still hold its all-zero
+default PSK, which the detect script below checks.
 
 Before installing on an unlisted Goodix USB device, run:
 
@@ -211,7 +217,7 @@ default path. See the [Windows dual-boot migration guide](WINDOWS-DUAL-BOOT.md).
 - This is an experimental, out-of-tree driver tied to pinned libfprint and
   fprintd revisions.
 - Hardware validation currently covers only the Dell XPS 13 9305 with the
-  `27c6:5335` sensor.
+  `27c6:5335` sensor and the Dell XPS 13 9310 with the `27c6:533c` sensor.
 - Fingerprint images and matching are handled on the host. This is not a
   match-on-chip or secure-element design.
 - A plaintext imported GTLS key is protected by filesystem permissions, not a

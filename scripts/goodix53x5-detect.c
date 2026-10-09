@@ -1,5 +1,6 @@
-/* Identify Goodix devices that may be compatible with the 53x5 Milan driver.
- * The probe makes no persistent device writes and captures no biometric data. */
+/* Identify Goodix devices that may be compatible with the 53x5 Milan driver,
+ * over either USB framing it supports. The probe makes no persistent device
+ * writes and captures no biometric data. */
 
 #include <gio/gio.h>
 #include <gusb.h>
@@ -9,10 +10,13 @@
 #include <unistd.h>
 
 #define GOODIX_VID 0x27c6
-#define GOODIX_INTERFACE 1
-#define GOODIX_EP_OUT 0x03
-#define GOODIX_EP_IN 0x81
 #define GOODIX_CHUNK_SIZE 64
+/* Wrapped framing: [flags][length LE16][sum of the first three] then the
+ * message; 0xa0 marks a protocol message. */
+#define GOODIX_PACK_HEADER 4
+#define GOODIX_PACK_MESSAGE 0xa0
+#define GOODIX_PSK_HASH_DIRECT 0xB003
+#define GOODIX_PSK_HASH_WRAPPED 0xbb020001
 #define GOODIX_TIMEOUT_MS 2000
 #define GOODIX_MAX_MESSAGE (64 * 1024)
 #define MILAN_CHIP_FAMILY_MASK 0xffffff00u
@@ -28,14 +32,59 @@ typedef enum
   PROBE_INCONCLUSIVE,
 } ProbeResult;
 
+typedef struct _Probe Probe;
+
+/* What differs between the sensor families the driver runs: how each is
+ * reached over USB and the commands it answers differently. 533c puts the
+ * same chip behind a GM168SEC secure element that speaks the wrapped framing. */
 typedef struct
 {
-  guint16     vid;
-  guint16     pid;
-  guint32     chip_id;
-  gchar      *firmware;
-  ProbeResult result;
-  gchar      *reason;
+  const gchar  *name;
+  guint8        interface;
+  guint8        ep_out;
+  guint8        ep_in;
+  /* Writes @message into the one USB chunk sent for it. */
+  gboolean    (*frame) (const GByteArray *message,
+                        guint8           *transfer,
+                        GError          **error);
+  /* Returns the next protocol message from the sensor. */
+  GByteArray *(*receive) (Probe   *probe,
+                          GError **error);
+  /* TRUE where some commands are answered with the reply alone. */
+  gboolean      reply_implies_ack;
+  /* TRUE where the ping may go unanswered. */
+  gboolean      ping_may_be_silent;
+  guint8        reset_payload[2];
+  /* TRUE where the sensor answers the reset, so its reply is read with it. */
+  gboolean      reset_replies;
+  /* Bytes of the chip-ID register read; the first four agree. */
+  gsize         chip_request_length;
+  /* The slot the PSK hash is read from and the record type it comes back as. */
+  guint32       psk_hash_type;
+  /* Writes the request reading @type into @request; returns its length. */
+  gsize       (*psk_hash_request) (guint32 type,
+                                   guint8  request[16]);
+  /* TRUE where the driver never provisions the sensor, so it must hold the
+   * all-zero PSK. */
+  gboolean      requires_default_psk;
+} ProbeLayout;
+
+/* The device being probed and how to reach it. */
+struct _Probe
+{
+  GUsbDevice        *device;
+  const ProbeLayout *layout;
+};
+
+typedef struct
+{
+  guint16            vid;
+  guint16            pid;
+  const ProbeLayout *layout;
+  guint32            chip_id;
+  gchar             *firmware;
+  ProbeResult        result;
+  gchar             *reason;
 } ProbeReport;
 
 static gboolean use_color;
@@ -125,15 +174,44 @@ validate_message (const guint8 *message,
 }
 
 static gboolean
-bulk_read (GUsbDevice *device,
-           guint8     *chunk,
-           gsize      *actual_length,
-           guint       timeout,
-           GError    **error)
+bulk_read (Probe   *probe,
+           guint8  *chunk,
+           gsize   *actual_length,
+           guint    timeout,
+           GError **error)
 {
-  return g_usb_device_bulk_transfer (device, GOODIX_EP_IN, chunk,
+  return g_usb_device_bulk_transfer (probe->device, probe->layout->ep_in, chunk,
                                      GOODIX_CHUNK_SIZE, actual_length,
                                      timeout, NULL, error);
+}
+
+static guint8
+pack_checksum (const guint8 *header)
+{
+  return header[0] + header[1] + header[2];
+}
+
+static void
+write_pack_header (guint8 *header,
+                   guint8  flags,
+                   gsize   length)
+{
+  header[0] = flags;
+  header[1] = length & 0xFF;
+  header[2] = (length >> 8) & 0xFF;
+  header[3] = pack_checksum (header);
+}
+
+/* Returns the payload length a wrapped pack header announces, or FALSE when
+ * its checksum does not match. */
+static gboolean
+read_pack_header (const guint8 *header,
+                  gsize        *length)
+{
+  if (pack_checksum (header) != header[3])
+    return FALSE;
+  *length = header[1] | ((gsize) header[2] << 8);
+  return TRUE;
 }
 
 static gboolean
@@ -155,8 +233,8 @@ receive_made_progress (gsize     appended,
 }
 
 static gboolean
-drain_input (GUsbDevice *device,
-             GError    **error)
+drain_input (Probe   *probe,
+             GError **error)
 {
   guint8 chunk[GOODIX_CHUNK_SIZE];
 
@@ -165,7 +243,7 @@ drain_input (GUsbDevice *device,
       gsize actual_length = 0;
       g_autoptr(GError) read_error = NULL;
 
-      if (bulk_read (device, chunk, &actual_length, 50, &read_error))
+      if (bulk_read (probe, chunk, &actual_length, 50, &read_error))
         continue;
       if (g_error_matches (read_error, G_USB_DEVICE_ERROR,
                            G_USB_DEVICE_ERROR_TIMED_OUT))
@@ -180,9 +258,61 @@ drain_input (GUsbDevice *device,
   return FALSE;
 }
 
+/* Returns the protocol message carried by the next wrapped pack. Packs are
+ * zero-padded to whole USB chunks and never start with zero. */
 static GByteArray *
-receive_message (GUsbDevice *device,
-                 GError    **error)
+receive_wrapped_message (Probe   *probe,
+                         GError **error)
+{
+  g_autoptr(GByteArray) stream = g_byte_array_new ();
+  guint8 chunk[GOODIX_CHUNK_SIZE];
+  gsize length = 0;
+  guint no_progress_count = 0;
+
+  while (stream->len < GOODIX_PACK_HEADER ||
+         stream->len < GOODIX_PACK_HEADER + length)
+    {
+      gsize actual_length = 0;
+      gsize skip = 0;
+
+      if (!bulk_read (probe, chunk, &actual_length, GOODIX_TIMEOUT_MS, error))
+        return NULL;
+      while (stream->len == 0 && skip < actual_length && chunk[skip] == 0)
+        skip++;
+      if (!receive_made_progress (actual_length - skip, &no_progress_count, error))
+        return NULL;
+      g_byte_array_append (stream, chunk + skip, actual_length - skip);
+      if (stream->len >= GOODIX_PACK_HEADER && length == 0 &&
+          !read_pack_header (stream->data, &length))
+        {
+          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                               "Goodix pack header checksum mismatch");
+          return NULL;
+        }
+      if (length > GOODIX_MAX_MESSAGE)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                       "Invalid Goodix pack size: %zu", length);
+          return NULL;
+        }
+    }
+
+  if (stream->data[0] != GOODIX_PACK_MESSAGE)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                   "Unexpected Goodix pack 0x%02x", stream->data[0]);
+      return NULL;
+    }
+  g_byte_array_remove_range (stream, 0, GOODIX_PACK_HEADER);
+  g_byte_array_set_size (stream, length);
+  if (!validate_message (stream->data, stream->len, error))
+    return NULL;
+  return g_steal_pointer (&stream);
+}
+
+static GByteArray *
+receive_direct_message (Probe   *probe,
+                        GError **error)
 {
   g_autoptr(GByteArray) message = g_byte_array_new ();
   guint8 chunk[GOODIX_CHUNK_SIZE];
@@ -196,7 +326,7 @@ receive_message (GUsbDevice *device,
       gsize data_offset = 0;
       gsize append_length;
 
-      if (!bulk_read (device, chunk, &actual_length, GOODIX_TIMEOUT_MS, error))
+      if (!bulk_read (probe, chunk, &actual_length, GOODIX_TIMEOUT_MS, error))
         return NULL;
       if (actual_length == 0)
         {
@@ -247,8 +377,111 @@ receive_message (GUsbDevice *device,
   return g_steal_pointer (&message);
 }
 
+static gboolean
+fits_one_chunk (gsize    length,
+                GError **error)
+{
+  if (length <= GOODIX_CHUNK_SIZE)
+    return TRUE;
+  g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                       "Probe command exceeds one USB chunk");
+  return FALSE;
+}
+
+static gboolean
+frame_direct (const GByteArray *message,
+              guint8           *transfer,
+              GError          **error)
+{
+  if (!fits_one_chunk (message->len, error))
+    return FALSE;
+  memcpy (transfer, message->data, message->len);
+  return TRUE;
+}
+
+static gboolean
+frame_wrapped (const GByteArray *message,
+               guint8           *transfer,
+               GError          **error)
+{
+  if (!fits_one_chunk (GOODIX_PACK_HEADER + message->len, error))
+    return FALSE;
+  write_pack_header (transfer, GOODIX_PACK_MESSAGE, message->len);
+  memcpy (transfer + GOODIX_PACK_HEADER, message->data, message->len);
+  return TRUE;
+}
+
+static void
+put_u32_le (guint8  *out,
+            guint32  value)
+{
+  for (guint i = 0; i < 4; i++)
+    out[i] = (value >> (8 * i)) & 0xFF;
+}
+
+static gsize
+production_read_request (guint32 type,
+                         guint8  request[16])
+{
+  put_u32_le (request, type);
+  return 4;
+}
+
+/* Length, offset, preset slot and a zero word. */
+static gsize
+preset_read_request (guint32 type,
+                     guint8  request[16])
+{
+  put_u32_le (request, 32);
+  put_u32_le (request + 4, 0);
+  put_u32_le (request + 8, type);
+  put_u32_le (request + 12, 0);
+  return 16;
+}
+
+static const ProbeLayout probe_layouts[] = {
+  {
+    .name = "direct framing, interface 1",
+    .interface = 1,
+    .ep_out = 0x03,
+    .ep_in = 0x81,
+    .frame = frame_direct,
+    .receive = receive_direct_message,
+    .reset_payload = { 0x01, 0x14 },
+    .chip_request_length = 5,
+    .psk_hash_type = GOODIX_PSK_HASH_DIRECT,
+    .psk_hash_request = production_read_request,
+  },
+  {
+    .name = "wrapped framing, interface 0 (GM168SEC)",
+    .interface = 0,
+    .ep_out = 0x01,
+    .ep_in = 0x83,
+    .frame = frame_wrapped,
+    .receive = receive_wrapped_message,
+    .reply_implies_ack = TRUE,
+    .ping_may_be_silent = TRUE,
+    .reset_payload = { 0x05, 0x14 },
+    .reset_replies = TRUE,
+    .chip_request_length = 4,
+    .psk_hash_type = GOODIX_PSK_HASH_WRAPPED,
+    .psk_hash_request = preset_read_request,
+    .requires_default_psk = TRUE,
+  },
+};
+
+static gboolean
+is_ack_for (GByteArray *message,
+            guint8      command_byte)
+{
+  return (message->data[0] >> 4) == 0x0B &&
+         ((message->data[0] & 0x0F) >> 1) == 0 &&
+         message->len >= 6 && message->data[3] == command_byte &&
+         (message->data[4] & 1) != 0;
+}
+
 static GByteArray *
-run_command (GUsbDevice   *device,
+run_command (Probe        *probe,
              guint8        category,
              guint8        command,
              const guint8 *payload,
@@ -257,21 +490,15 @@ run_command (GUsbDevice   *device,
              GError      **error)
 {
   g_autoptr(GByteArray) request = NULL;
-  g_autoptr(GByteArray) ack = NULL;
+  g_autoptr(GByteArray) first = NULL;
   guint8 transfer[GOODIX_CHUNK_SIZE] = { 0 };
   guint8 command_byte;
   gsize actual_length = 0;
 
   request = build_message (category, command, payload, payload_length);
-  if (request->len > sizeof (transfer))
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                           "Probe command exceeds one USB chunk");
-      return NULL;
-    }
-
-  memcpy (transfer, request->data, request->len);
-  if (!g_usb_device_bulk_transfer (device, GOODIX_EP_OUT, transfer,
+  if (!probe->layout->frame (request, transfer, error))
+    return NULL;
+  if (!g_usb_device_bulk_transfer (probe->device, probe->layout->ep_out, transfer,
                                    sizeof (transfer), &actual_length,
                                    GOODIX_TIMEOUT_MS, NULL, error))
     return NULL;
@@ -283,14 +510,13 @@ run_command (GUsbDevice   *device,
     }
 
   command_byte = (category << 4) | (command << 1);
-  ack = receive_message (device, error);
-  if (!ack)
+  first = probe->layout->receive (probe, error);
+  if (!first)
     return NULL;
-  if ((ack->data[0] >> 4) != 0x0B ||
-      ((ack->data[0] & 0x0F) >> 1) != 0 ||
-      ack->len < 6 || ack->data[3] != command_byte ||
-      (ack->data[4] & 1) == 0)
+  if (!is_ack_for (first, command_byte))
     {
+      if (probe->layout->reply_implies_ack && expect_reply)
+        return g_steal_pointer (&first);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
                    "Invalid ACK for Goodix command 0x%02x", command_byte);
       return NULL;
@@ -298,7 +524,7 @@ run_command (GUsbDevice   *device,
 
   if (!expect_reply)
     return g_byte_array_new ();
-  return receive_message (device, error);
+  return probe->layout->receive (probe, error);
 }
 
 static gboolean
@@ -364,61 +590,91 @@ sanitize_firmware (const guint8 *data,
   return g_string_free (result, FALSE);
 }
 
-static gboolean
-has_expected_usb_layout (GUsbDevice *device,
-                         GError    **error)
+/* Returns the layout whose interface exposes its endpoints on @device, or
+ * NULL with G_IO_ERROR_NOT_SUPPORTED when no layout matches. */
+static const ProbeLayout *
+find_usb_layout (GUsbDevice *device,
+                 GError    **error)
 {
   g_autoptr(GPtrArray) interfaces = NULL;
 
   interfaces = g_usb_device_get_interfaces (device, error);
   if (!interfaces)
-    return FALSE;
+    return NULL;
 
-  for (guint i = 0; i < interfaces->len; i++)
-    {
-      GUsbInterface *iface = g_ptr_array_index (interfaces, i);
-      g_autoptr(GPtrArray) endpoints = NULL;
-      gboolean has_in = FALSE;
-      gboolean has_out = FALSE;
+  for (gsize l = 0; l < G_N_ELEMENTS (probe_layouts); l++)
+    for (guint i = 0; i < interfaces->len; i++)
+      {
+        const ProbeLayout *layout = &probe_layouts[l];
+        GUsbInterface *iface = g_ptr_array_index (interfaces, i);
+        g_autoptr(GPtrArray) endpoints = NULL;
+        gboolean has_in = FALSE;
+        gboolean has_out = FALSE;
 
-      if (g_usb_interface_get_number (iface) != GOODIX_INTERFACE ||
-          g_usb_interface_get_alternate (iface) != 0)
-        continue;
-      endpoints = g_usb_interface_get_endpoints (iface);
-      if (!endpoints)
-        continue;
-      for (guint j = 0; j < endpoints->len; j++)
-        {
-          GUsbEndpoint *endpoint = g_ptr_array_index (endpoints, j);
-          guint8 address = g_usb_endpoint_get_address (endpoint);
+        if (g_usb_interface_get_number (iface) != layout->interface ||
+            g_usb_interface_get_alternate (iface) != 0)
+          continue;
+        endpoints = g_usb_interface_get_endpoints (iface);
+        if (!endpoints)
+          continue;
+        for (guint j = 0; j < endpoints->len; j++)
+          {
+            GUsbEndpoint *endpoint = g_ptr_array_index (endpoints, j);
+            guint8 address = g_usb_endpoint_get_address (endpoint);
 
-          has_in |= address == GOODIX_EP_IN;
-          has_out |= address == GOODIX_EP_OUT;
-        }
-      if (has_in && has_out)
-        return TRUE;
-    }
+            has_in |= address == layout->ep_in;
+            has_out |= address == layout->ep_out;
+          }
+        if (has_in && has_out)
+          return layout;
+      }
 
-  g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                       "USB interface 1 does not expose endpoints 0x03 and 0x81");
-  return FALSE;
+  {
+    g_autoptr(GString) known = g_string_new (NULL);
+
+    for (gsize l = 0; l < G_N_ELEMENTS (probe_layouts); l++)
+      g_string_append_printf (known, "%s%s (endpoints 0x%02x/0x%02x)",
+                              l ? "; " : "", probe_layouts[l].name,
+                              probe_layouts[l].ep_out, probe_layouts[l].ep_in);
+    g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                 "No known USB layout is present: %s", known->str);
+  }
+  return NULL;
 }
 
-static gboolean
+/* Returns the 32-byte PSK hash in a production record of @type, or NULL
+ * when the record is malformed or of another type. */
+static const guint8 *
 parse_production_hash (const guint8 *payload,
-                       gsize         payload_length)
+                       gsize         payload_length,
+                       guint32       type)
 {
-  guint32 type;
+  guint32 record_type;
   guint32 data_length;
 
   if (payload_length < 9 || payload[0] != 0)
-    return FALSE;
-  type = payload[1] | ((guint32) payload[2] << 8) |
-         ((guint32) payload[3] << 16) | ((guint32) payload[4] << 24);
+    return NULL;
+  record_type = payload[1] | ((guint32) payload[2] << 8) |
+                ((guint32) payload[3] << 16) | ((guint32) payload[4] << 24);
   data_length = payload[5] | ((guint32) payload[6] << 8) |
                 ((guint32) payload[7] << 16) | ((guint32) payload[8] << 24);
-  return type == 0xB003 && data_length == 32 &&
-         data_length == payload_length - 9;
+  if (record_type != type || data_length != 32 || data_length != payload_length - 9)
+    return NULL;
+  return payload + 9;
+}
+
+/* Checks whether @hash is the SHA-256 of the all-zero PSK sensors ship with. */
+static gboolean
+is_default_psk_hash (const guint8 *hash)
+{
+  const guint8 psk[32] = { 0 };
+  g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
+  guint8 expected[32];
+  gsize expected_length = sizeof (expected);
+
+  g_checksum_update (sha, psk, sizeof (psk));
+  g_checksum_get_digest (sha, expected, &expected_length);
+  return memcmp (hash, expected, sizeof (expected)) == 0;
 }
 
 static void
@@ -438,16 +694,28 @@ finish_report (ProbeReport *report,
                                       cleanup_error->message);
 }
 
+/* Checks whether a ping that failed with @error just went unanswered, which
+ * the layout allows. */
+static gboolean
+is_silent_ping (const Probe  *probe,
+                const GError *error)
+{
+  return probe->layout->ping_may_be_silent &&
+         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT);
+}
+
 static ProbeResult
 probe_device (GUsbDevice  *device,
               ProbeReport *report)
 {
   const guint8 ping_payload[] = { 0x00, 0x00 };
   const guint8 firmware_payload[] = { 0x00, 0x00 };
-  const guint8 reset_payload[] = { 0x01, 0x14 };
   const guint8 chip_payload[] = { 0x00, 0x00, 0x00, 0x04, 0x00 };
   const guint8 otp_payload[] = { 0x00, 0x00 };
-  const guint8 psk_hash_payload[] = { 0x03, 0xB0, 0x00, 0x00 };
+  Probe probe = { .device = device };
+  guint8 psk_hash_request[16];
+  gsize psk_hash_request_length;
+  const guint8 *psk_hash;
   const guint8 sleep_payload[] = { 0x01, 0x00 };
   g_autoptr(GByteArray) reply = NULL;
   g_autoptr(GError) error = NULL;
@@ -459,7 +727,8 @@ probe_device (GUsbDevice  *device,
   gboolean protocol_started = FALSE;
 
   report->result = PROBE_INCONCLUSIVE;
-  if (!has_expected_usb_layout (device, &error))
+  probe.layout = report->layout = find_usb_layout (device, &error);
+  if (!probe.layout)
     {
       if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED))
         report->result = PROBE_INCOMPATIBLE;
@@ -469,21 +738,23 @@ probe_device (GUsbDevice  *device,
     goto out;
   opened = TRUE;
   if (!g_usb_device_claim_interface (
-        device, GOODIX_INTERFACE,
+        device, probe.layout->interface,
         G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER, &error))
     goto out;
   claimed = TRUE;
-  if (!drain_input (device, &error))
+  if (!drain_input (&probe, &error))
     goto out;
 
-  reply = run_command (device, 0x00, 0x00, ping_payload,
+  reply = run_command (&probe, 0x00, 0x00, ping_payload,
                        sizeof (ping_payload), FALSE, &error);
-  if (!reply)
+  if (!reply && is_silent_ping (&probe, error))
+    g_clear_error (&error);
+  else if (!reply)
     goto out;
   protocol_started = TRUE;
 
   g_clear_pointer (&reply, g_byte_array_unref);
-  reply = run_command (device, 0x0A, 0x04, firmware_payload,
+  reply = run_command (&probe, 0x0A, 0x04, firmware_payload,
                        sizeof (firmware_payload), TRUE, &error);
   if (!reply || !parse_reply (reply, 0x0A, 0x04, &payload,
                               &payload_length, &error))
@@ -491,15 +762,17 @@ probe_device (GUsbDevice  *device,
   report->firmware = sanitize_firmware (payload, payload_length);
 
   g_clear_pointer (&reply, g_byte_array_unref);
-  reply = run_command (device, 0x0A, 0x01, reset_payload,
-                       sizeof (reset_payload), FALSE, &error);
-  if (!reply)
+  reply = run_command (&probe, 0x0A, 0x01, probe.layout->reset_payload,
+                       sizeof (probe.layout->reset_payload),
+                       probe.layout->reset_replies, &error);
+  if (!reply || (probe.layout->reset_replies &&
+                 !parse_reply (reply, 0x0A, 0x01, &payload, &payload_length, &error)))
     goto out;
   g_usleep (10 * 1000);
 
   g_clear_pointer (&reply, g_byte_array_unref);
-  reply = run_command (device, 0x08, 0x01, chip_payload,
-                       sizeof (chip_payload), TRUE, &error);
+  reply = run_command (&probe, 0x08, 0x01, chip_payload,
+                       probe.layout->chip_request_length, TRUE, &error);
   if (!reply || !parse_reply (reply, 0x08, 0x01, &payload,
                               &payload_length, &error))
     goto out;
@@ -521,7 +794,7 @@ probe_device (GUsbDevice  *device,
     }
 
   g_clear_pointer (&reply, g_byte_array_unref);
-  reply = run_command (device, 0x0A, 0x03, otp_payload,
+  reply = run_command (&probe, 0x0A, 0x03, otp_payload,
                        sizeof (otp_payload), TRUE, &error);
   if (!reply || !parse_reply (reply, 0x0A, 0x03, &payload,
                               &payload_length, &error))
@@ -534,15 +807,27 @@ probe_device (GUsbDevice  *device,
     }
 
   g_clear_pointer (&reply, g_byte_array_unref);
-  reply = run_command (device, 0x0E, 0x02, psk_hash_payload,
-                       sizeof (psk_hash_payload), TRUE, &error);
+  psk_hash_request_length = probe.layout->psk_hash_request (probe.layout->psk_hash_type,
+                                                            psk_hash_request);
+  reply = run_command (&probe, 0x0E, 0x02, psk_hash_request,
+                       psk_hash_request_length, TRUE, &error);
   if (!reply || !parse_reply (reply, 0x0E, 0x02, &payload,
                               &payload_length, &error))
     goto out;
-  if (!parse_production_hash (payload, payload_length))
+  psk_hash = parse_production_hash (payload, payload_length,
+                                    probe.layout->psk_hash_type);
+  if (!psk_hash)
     {
       g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
                            "PSK hash production record has an unexpected format");
+      goto out;
+    }
+  if (probe.layout->requires_default_psk && !is_default_psk_hash (psk_hash))
+    {
+      g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                           "The sensor's PSK is not the all-zero default; the driver "
+                           "never writes a PSK to this sensor, so it works only "
+                           "with the matching key imported");
       goto out;
     }
 
@@ -553,7 +838,7 @@ out:
     {
       g_autoptr(GByteArray) sleep_reply = NULL;
 
-      sleep_reply = run_command (device, 0x06, 0x00, sleep_payload,
+      sleep_reply = run_command (&probe, 0x06, 0x00, sleep_payload,
                                  sizeof (sleep_payload), FALSE, &cleanup_error);
     }
   if (claimed)
@@ -561,7 +846,7 @@ out:
       g_autoptr(GError) release_error = NULL;
 
       if (!g_usb_device_release_interface (
-            device, GOODIX_INTERFACE,
+            device, probe.layout->interface,
             G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER, &release_error) &&
           !cleanup_error)
         cleanup_error = g_steal_pointer (&release_error);
@@ -580,7 +865,7 @@ out:
 static gboolean
 is_registered_pid (guint16 pid)
 {
-  return pid == 0x5335 || pid == 0x5385 || pid == 0x5395;
+  return pid == 0x5335 || pid == 0x533c || pid == 0x5385 || pid == 0x5395;
 }
 
 static gchar *
@@ -606,6 +891,8 @@ print_report (const ProbeReport *report,
 {
   g_print ("%sGoodix %04x:%04x%s\n", color ("\033[1;36m"), report->vid,
            report->pid, color ("\033[0m"));
+  if (report->layout)
+    g_print ("USB %s\n", report->layout->name);
   if (report->firmware && report->firmware[0] != '\0')
     g_print ("Firmware %s\n", report->firmware);
   if (report->chip_id != 0)
@@ -673,6 +960,24 @@ self_test (void)
   const guint8 payload[] = { 0x00, 0x00 };
   const guint8 chip_bytes[] = { 0x0c, 0xa1, 0x00, 0x22 };
   guint8 production_payload[41] = { 0 };
+  guint8 wrapped_payload[41] = { 0, 0x01, 0x00, 0x02, 0xbb, 32 };
+  /* A vendor-driver write: the 0x14-byte PSK read in a message pack. */
+  const guint8 vendor_header[GOODIX_PACK_HEADER] = { 0xa0, 0x14, 0x00, 0xb4 };
+  /* SHA-256 of 32 zero bytes, as read from a 533c. */
+  const guint8 default_hash[32] = {
+    0x66, 0x68, 0x7a, 0xad, 0xf8, 0x62, 0xbd, 0x77, 0x6c, 0x8f, 0xc1, 0x8b,
+    0x8e, 0x9f, 0x8e, 0x20, 0x08, 0x97, 0x14, 0x85, 0x6e, 0xe2, 0x33, 0xb3,
+    0x90, 0x2a, 0x59, 0x1d, 0x0d, 0x5f, 0x29, 0x25,
+  };
+  /* The PSK hash requests the vendor drivers send. */
+  const guint8 direct_request[] = { 0x03, 0xB0, 0x00, 0x00 };
+  const guint8 wrapped_request[] = {
+    0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x02, 0xbb, 0x00, 0x00, 0x00, 0x00,
+  };
+  guint8 request[16];
+  guint8 header[GOODIX_PACK_HEADER];
+  gsize pack_length = 0;
   guint8 otp[27] = { 0 };
   guint8 otp_checksum = 0;
   guint no_progress_count = 0;
@@ -694,9 +999,29 @@ self_test (void)
       otp_hash_step (0x01) != 0x07 ||
       !verify_otp (otp, sizeof (otp)) ||
       !parse_production_hash (production_payload,
-                              sizeof (production_payload)) ||
+                              sizeof (production_payload), GOODIX_PSK_HASH_DIRECT) ||
       parse_production_hash (production_payload,
-                             sizeof (production_payload) - 1))
+                             sizeof (production_payload) - 1, GOODIX_PSK_HASH_DIRECT) ||
+      parse_production_hash (production_payload,
+                             sizeof (production_payload), GOODIX_PSK_HASH_WRAPPED) ||
+      !parse_production_hash (wrapped_payload, sizeof (wrapped_payload),
+                              GOODIX_PSK_HASH_WRAPPED) ||
+      !is_default_psk_hash (default_hash) ||
+      is_default_psk_hash (wrapped_payload + 9))
+    return FALSE;
+
+  if (production_read_request (GOODIX_PSK_HASH_DIRECT, request) != sizeof (direct_request) ||
+      memcmp (request, direct_request, sizeof (direct_request)) != 0 ||
+      preset_read_request (GOODIX_PSK_HASH_WRAPPED, request) != sizeof (wrapped_request) ||
+      memcmp (request, wrapped_request, sizeof (wrapped_request)) != 0)
+    return FALSE;
+
+  write_pack_header (header, GOODIX_PACK_MESSAGE, 0x14);
+  if (memcmp (header, vendor_header, sizeof (header)) != 0 ||
+      !read_pack_header (header, &pack_length) || pack_length != 0x14)
+    return FALSE;
+  header[3] ^= 0x01;
+  if (read_pack_header (header, &pack_length))
     return FALSE;
 
   for (guint i = 0; i < 8; i++)
