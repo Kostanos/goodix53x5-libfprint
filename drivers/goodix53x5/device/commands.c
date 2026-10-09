@@ -684,9 +684,11 @@ goodix_cmd_set_sleep_mode_result (FpiSsm *ssm, FpDevice *dev,
 void
 goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on)
 {
-  guint8 payload_on[3] = { 0x01, 0x01, 0x00 };
+  guint8 payload_on[3];
   guint8 payload_off[3] = { 0x00, 0x00, 0x00 };
 
+  memcpy (payload_on, goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->ec_on_payload,
+          sizeof (payload_on));
   if (on)
     goodix_run_cmd (ssm, dev, 0xA, 0x7, payload_on, 3, FALSE);
   else

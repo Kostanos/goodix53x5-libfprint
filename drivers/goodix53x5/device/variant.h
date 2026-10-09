@@ -37,6 +37,9 @@ typedef struct
   guint8      usb_interface;
   guint8      ep_in;
   guint8      ep_out;
+  /* The EC-control payload that isolates the power button while the sensor
+   * scans; every variant ends isolation with three zero bytes. */
+  guint8      ec_on_payload[3];
   /* Bytes of the wake NOP's zero payload. */
   gsize       wake_payload_len;
   /* The firmware-version reads open attempts before giving up on the version. */

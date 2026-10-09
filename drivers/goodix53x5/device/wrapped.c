@@ -323,6 +323,9 @@ const GoodixVariant goodix_variant_wrapped = {
   .usb_interface = 0,
   .ep_in = 0x03 | FPI_USB_ENDPOINT_IN,
   .ep_out = 0x01 | FPI_USB_ENDPOINT_OUT,
+  /* McuSetEcCtrl builds [enable, mode, enable]; Dell's 533c driver turns
+   * isolation on with mode 0 when a session starts. */
+  .ec_on_payload = { 0x01, 0x00, 0x01 },
   .wake_payload_len = 4,
   /* SelfCheck reads, then wakes and reads once more. */
   .firmware_reads = 2,

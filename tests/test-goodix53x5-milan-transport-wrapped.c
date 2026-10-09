@@ -714,6 +714,50 @@ test_wrapped_d0_requests_reconnect (void)
 }
 
 static void
+ec_on_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  goodix_cmd_ec_control (ssm, dev, TRUE);
+}
+
+/* Returns the payload @dev writes to turn power-button isolation on. */
+static GBytes *
+ec_on_payload (FpDevice *dev)
+{
+  const guint8 *message;
+  GBytes *payload;
+
+  command_session_begin (dev);
+  fpi_ssm_start (fpi_ssm_new (dev, ec_on_handler, 1), startup_done);
+  g_assert_nonnull (usb.pending);
+  message = usb.pending->buffer + (fixture_wrapped (dev) ? 4 : 0);
+  g_assert_cmpuint (message[0], ==, 0xae);
+  payload = g_bytes_new (message + 3, 3);
+  fixture_complete (NULL);
+  ack_reply (usb.pending, 0xae);
+  fixture_complete (NULL);
+  g_assert_cmpuint (io.completions, ==, 1);
+  g_assert_no_error (io.error);
+  command_session_end (dev);
+  return payload;
+}
+
+/* 533c isolates the power button with [enable, mode 0, enable], the layout
+ * McuSetEcCtrl builds; 53x5 keeps its native bytes. */
+static void
+test_wrapped_ec_on_payload (void)
+{
+  const guint8 wrapped[3] = { 0x01, 0x00, 0x01 };
+  const guint8 direct[3] = { 0x01, 0x01, 0x00 };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(GBytes) payload = ec_on_payload (dev);
+  g_autoptr(FpDevice) direct_dev = fixture_device_new ();
+  g_autoptr(GBytes) direct_payload = ec_on_payload (direct_dev);
+
+  g_assert_cmpmem (g_bytes_get_data (payload, NULL), 3, wrapped, 3);
+  g_assert_cmpmem (g_bytes_get_data (direct_payload, NULL), 3, direct, 3);
+}
+
+static void
 register_wrapped_tests (void)
 {
   g_test_add_func ("/goodix53x5/wrapped/pack-header", test_wrapped_pack_header);
@@ -742,6 +786,7 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/ack-reports-config-loss",
                    test_wrapped_ack_reports_config_loss);
   g_test_add_func ("/goodix53x5/wrapped/command-budgets", test_wrapped_command_budgets);
+  g_test_add_func ("/goodix53x5/wrapped/ec-on-payload", test_wrapped_ec_on_payload);
   g_test_add_func ("/goodix53x5/wrapped/d0-requests-reconnect",
                    test_wrapped_d0_requests_reconnect);
 }

@@ -1158,6 +1158,7 @@ const GoodixVariant goodix_variant_direct = {
   .usb_interface = 1,
   .ep_in = GOODIX_EP_IN,
   .ep_out = GOODIX_EP_OUT,
+  .ec_on_payload = { 0x01, 0x01, 0x00 },
   .wake_payload_len = 2,
   .firmware_reads = 5,
   .firmware_required = FALSE,
