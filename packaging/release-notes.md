@@ -8,7 +8,7 @@ lsusb -d 27c6:
 
 | Result | What to do |
 | --- | --- |
-| `27c6:5335`, `27c6:5385` or `27c6:5395` | Supported by this release; choose a download below. Known laptops: Dell XPS 13 9305 (`27c6:5335`), XPS 13 7390 2-in-1 (`27c6:5385`), XPS 15 9570 and XPS 15 7590 (`27c6:5395`). |
+| `27c6:5335`, `27c6:533c`, `27c6:5385` or `27c6:5395` | Supported by this release; choose a download below. Known laptops: Dell XPS 13 9305 (`27c6:5335`), XPS 13 9310 (`27c6:533c`), XPS 13 7390 2-in-1 (`27c6:5385`), XPS 15 9570 and XPS 15 7590 (`27c6:5395`). |
 | Another `27c6:` Goodix ID | Not supported by this release yet. Run the detector below and report the result. |
 | No output | No Goodix USB fingerprint sensor was found; this release does not support your reader. |
 
