@@ -1032,10 +1032,10 @@ goodix_rx_image (GoodixTransport *operation, const guint8 *payload, gsize len)
       self->image_response_failed = FALSE;
       self->command_response_ready |= goodix_response_bit (GOODIX_RESPONSE_IMAGE);
     }
-  else if (status == GOODIX_FRAME_REJECTED_IN_SESSION)
+  else if (status != GOODIX_FRAME_REJECTED)
     {
-      /* Incomplete-session rejection consumes the counter but
-       * preserves raw status; only established raw failure sets it. */
+      /* Incomplete-session rejection consumes the counter but preserves raw
+       * status; an established frame failing to decrypt or decode sets it. */
       self->image_response_failed = TRUE;
     }
   if (!frame)

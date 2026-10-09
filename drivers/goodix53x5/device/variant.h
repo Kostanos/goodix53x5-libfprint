@@ -19,6 +19,7 @@ typedef struct _GoodixTransport GoodixTransport;
 
 typedef enum
 {
+  /* Decrypted by the established session. */
   GOODIX_FRAME_DECRYPTED,
   /* Rejected before the session was established; says nothing about the session. */
   GOODIX_FRAME_REJECTED,
