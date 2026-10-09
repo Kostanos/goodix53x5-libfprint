@@ -74,20 +74,22 @@ void goodix_cmd_mcu_send (FpiSsm *ssm, FpDevice *dev, guint32 data_type,
 /* Post-MCU-ACK GTLS wait; consume the bounded stream after its receive signal. */
 void goodix_recv_mcu (FpiSsm *ssm, FpDevice *dev, guint timeout, gsize length);
 
-/* Reads the SHA-256 of the sensor's PSK from the slot its variant keeps it
- * in; goodix_cmd_parse_psk_hash_reply() returns it. */
-void goodix_cmd_read_psk_hash (FpiSsm *ssm, FpDevice *dev);
+/* Returns the PSK hash answering GoodixVariant.read_psk_hash, or FALSE when
+ * the reply is not from that slot. */
 gboolean goodix_cmd_parse_psk_hash_reply (FpDevice      *dev,
                                           const guint8 **out_hash,
                                           gsize         *out_hash_len);
 
 /* Wrapped sensors (27c6:533c) only. */
+/* Reads @length bytes of preset @slot; the reply has production_read's
+ * layout, so goodix_cmd_parse_production_read_reply() reads it. */
+void goodix_cmd_preset_read (FpiSsm *ssm, FpDevice *dev, guint32 slot,
+                             guint32 length);
 void goodix_cmd_tls_request (FpiSsm *ssm, FpDevice *dev);
 void goodix_cmd_tls_established (FpiSsm *ssm, FpDevice *dev);
 /* Sends a TLS record to the sensor; completes once written, as the sensor
  * never ACKs one. */
-void goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev,
-                                 const guint8 *data, gsize data_len);
+void goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev, GBytes *record);
 
 /* Upload the (patched) sensor config blob. Waits for the configuration event;
  * its payload is not a success flag. */

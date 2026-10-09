@@ -68,8 +68,7 @@ test_wrapped_pack_header (void)
   const guint8 msg[70] = { 0xa8, 0x03, 0x00 };
   guint8 header[GOODIX_PACK_HEADER];
   gsize framed_len, len;
-  g_autofree guint8 *framed = goodix_frame_wrapped (GOODIX_PACK_MESSAGE, msg,
-                                                    sizeof (msg), &framed_len);
+  g_autofree guint8 *framed = goodix_frame_wrapped (msg, sizeof (msg), &framed_len);
 
   goodix_pack_write_header (header, GOODIX_PACK_MESSAGE, 0x14);
   g_assert_cmpmem (header, sizeof (header), vendor, sizeof (vendor));

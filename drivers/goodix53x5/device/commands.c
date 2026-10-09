@@ -32,10 +32,6 @@
 #define GOODIX_PROTO_CMD_FDT_DOWN 0x01
 #define GOODIX_PROTO_CMD_FDT_UP 0x02
 #define GOODIX_PROTO_CMD_FDT_MANUAL 0x03
-/* The preset slots holding the SHA-256 of the sensor's PSK. */
-#define GOODIX_PSK_HASH_TYPE         0xB003
-#define GOODIX_WRAPPED_PSK_HASH_TYPE 0xbb020001
-#define GOODIX_PSK_HASH_LEN          32
 #define GOODIX_PROTO_CMD_IMAGE 0x00
 
 #define GOODIX_FDT_IRQ_DOWN 0x0002
@@ -273,7 +269,7 @@ goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev,
 
   /* Wrapped sensors take a one-byte size; the first four bytes agree. */
   goodix_run_cmd_result (ssm, dev, 0x8, 0x1, payload,
-                         goodix_wrapped (FPI_DEVICE_GOODIX53X5 (dev)) ? 4 : sizeof (payload),
+                         goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->chip_id_request_len,
                          TRUE, callback);
 }
 
@@ -296,19 +292,13 @@ goodix_cmd_production_read (FpiSsm *ssm, FpDevice *dev, guint32 read_type)
 }
 
 void
-goodix_cmd_read_psk_hash (FpiSsm *ssm, FpDevice *dev)
+goodix_cmd_preset_read (FpiSsm *ssm, FpDevice *dev, guint32 slot, guint32 length)
 {
-  /* Wrapped sensors take length, offset, slot and zero; the reply has the
-   * production_read layout either way. */
+  /* Length, offset, slot and a zero word. */
   guint8 payload[16] = { 0 };
 
-  if (!goodix_wrapped (FPI_DEVICE_GOODIX53X5 (dev)))
-    {
-      goodix_cmd_production_read (ssm, dev, GOODIX_PSK_HASH_TYPE);
-      return;
-    }
-  goodix_encode_u32_le (payload, GOODIX_PSK_HASH_LEN);
-  goodix_encode_u32_le (payload + 8, GOODIX_WRAPPED_PSK_HASH_TYPE);
+  goodix_encode_u32_le (payload, length);
+  goodix_encode_u32_le (payload + 8, slot);
   goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_PRODUCTION, 0x2,
                   payload, sizeof (payload), TRUE);
 }
@@ -360,16 +350,12 @@ goodix_cmd_tls_established (FpiSsm *ssm, FpDevice *dev)
 }
 
 void
-goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev,
-                            const guint8 *data, gsize data_len)
+goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev, GBytes *record)
 {
   GoodixCommandCompletion *completion = g_new0 (GoodixCommandCompletion, 1);
-  GoodixTransportRequest request = {
-    .cmd = { .payload = (guint8 *) data, .payload_len = data_len, .tls_record = TRUE },
-  };
 
   completion->ssm = ssm;
-  goodix_transport_command (dev, &request, goodix_command_done, completion);
+  goodix_transport_send_record (dev, record, goodix_command_done, completion);
 }
 
 void
@@ -782,8 +768,7 @@ goodix_cmd_parse_psk_hash_reply (FpDevice      *dev,
                                  gsize         *out_hash_len)
 {
   return goodix_cmd_parse_production_read_reply (
-    dev, goodix_wrapped (FPI_DEVICE_GOODIX53X5 (dev)) ?
-         GOODIX_WRAPPED_PSK_HASH_TYPE : GOODIX_PSK_HASH_TYPE,
+    dev, goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->psk_hash_type,
     out_hash, out_hash_len);
 }
 

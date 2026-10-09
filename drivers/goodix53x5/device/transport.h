@@ -29,9 +29,6 @@ typedef struct
   guint8  *payload;
   gsize    payload_len;
   gboolean use_checksum;
-  /* Wrapped sensors only: TRUE sends payload as a raw TLS record, which the
-   * sensor never ACKs, instead of a category/command message. */
-  gboolean tls_record;
 } GoodixCmd;
 
 typedef struct
@@ -65,6 +62,18 @@ typedef void (*GoodixTransportJoined) (FpDevice *dev, gpointer data);
 /* Copy the request before returning. The independent IN remains posted. */
 void goodix_transport_command (FpDevice *dev, const GoodixTransportRequest *request,
                                 GoodixTransportDone done, gpointer data);
+/* Writes a raw TLS record; completes once written, as no sensor ACKs one. */
+void goodix_transport_send_record (FpDevice *dev, GBytes *record,
+                                   GoodixTransportDone done, gpointer data);
+
+/* Entry points of the receiver for GoodixVariant.receive: protocol messages
+ * go in as direct-framing cells, encrypted images and category-D data whole. */
+void goodix_rx_cell (GoodixTransport *operation, const guint8 *buffer,
+                     gsize cell_length);
+gboolean goodix_rx_image (GoodixTransport *operation, const guint8 *payload,
+                          gsize len);
+void goodix_mcu_publish (FpiDeviceGoodix53x5 *self, const guint8 *payload,
+                         gsize len);
 void goodix_transport_wait_event (FpDevice *dev, GoodixProfile9FdtWaitMode mode,
                                    GoodixTransportDone done, gpointer data);
 void goodix_transport_wait_mcu (FpDevice *dev, guint timeout, gsize length,
@@ -75,6 +84,9 @@ void goodix_transport_cancel_event (FpDevice *dev);
  * this is not a policy to cancel outstanding commands or CPU work. */
 void goodix_transport_quiesce (FpDevice *dev, GoodixTransportJoined joined,
                                gpointer data);
+
+/* Bytes per USB bulk packet; both framings pad writes to whole packets. */
+#define GOODIX_USB_CHUNK_SIZE 64
 
 /* Timeouts in ms */
 #define GOODIX_ACK_TIMEOUT    2000

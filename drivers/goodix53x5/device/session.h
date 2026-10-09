@@ -31,6 +31,12 @@ typedef void (*GoodixGtlsRestartDone) (FpDevice *dev,
                                        GError   *error,
                                        gpointer  data);
 
+/* How long a secure-channel handshake waits for each reply from the sensor. */
+#define GOODIX_CHANNEL_REPLY_TIMEOUT_MS 2000
+
+/* Returns a new SSM for one GTLS handshake attempt (direct sensors). */
+FpiSsm *goodix_gtls_attempt_new (FpDevice *dev);
+
 /* Run the native three-attempt restart with the retained selected PSK.
  * The caller joins the asynchronous completion before resuming scan work. */
 void goodix_start_gtls_restart (FpDevice             *dev,
