@@ -15,6 +15,8 @@
  * message; 0xa0 marks a protocol message. */
 #define GOODIX_PACK_HEADER 4
 #define GOODIX_PACK_MESSAGE 0xa0
+#define GOODIX_PACK_FAMILY_MESSAGE 0xa
+#define GOODIX_PACK_FAMILY_TLS 0xb
 #define GOODIX_PSK_HASH_DIRECT 0xB003
 #define GOODIX_PSK_HASH_WRAPPED 0xbb020001
 #define GOODIX_TIMEOUT_MS 2000
@@ -40,6 +42,9 @@ typedef struct _Probe Probe;
 typedef struct
 {
   const gchar  *name;
+  /* Checks whether the layout is tried on product @pid: other Goodix sensors
+   * share the wrapped layout's endpoints but not its protocol. */
+  gboolean    (*probes_pid) (guint16 pid);
   guint8        interface;
   guint8        ep_out;
   guint8        ep_in;
@@ -74,6 +79,8 @@ struct _Probe
 {
   GUsbDevice        *device;
   const ProbeLayout *layout;
+  /* Bytes read from the sensor and not yet taken as a message. */
+  GByteArray        *stream;
 };
 
 typedef struct
@@ -203,12 +210,14 @@ write_pack_header (guint8 *header,
 }
 
 /* Returns the payload length a wrapped pack header announces, or FALSE when
- * its checksum does not match. */
+ * it is not a header: a family other than 0xa or 0xb, or a wrong checksum. */
 static gboolean
 read_pack_header (const guint8 *header,
                   gsize        *length)
 {
-  if (pack_checksum (header) != header[3])
+  if ((header[0] >> 4 != GOODIX_PACK_FAMILY_MESSAGE &&
+       header[0] >> 4 != GOODIX_PACK_FAMILY_TLS) ||
+      pack_checksum (header) != header[3])
     return FALSE;
   *length = header[1] | ((gsize) header[2] << 8);
   return TRUE;
@@ -258,56 +267,81 @@ drain_input (Probe   *probe,
   return FALSE;
 }
 
-/* Returns the protocol message carried by the next wrapped pack. Packs are
- * zero-padded to whole USB chunks and never start with zero. */
-static GByteArray *
-receive_wrapped_message (Probe   *probe,
-                         GError **error)
+/* Takes the message of the first pack off @stream into @message, leaving
+ * the bytes after it. Returns G_IO_STATUS_AGAIN while the pack is
+ * incomplete, and fails on a header that is not one or a pack that is not
+ * a message. */
+static GIOStatus
+take_wrapped_message (GByteArray  *stream,
+                      GByteArray **message,
+                      GError     **error)
 {
-  g_autoptr(GByteArray) stream = g_byte_array_new ();
-  guint8 chunk[GOODIX_CHUNK_SIZE];
-  gsize length = 0;
-  guint no_progress_count = 0;
+  gsize padding = 0;
+  gsize length;
 
-  while (stream->len < GOODIX_PACK_HEADER ||
-         stream->len < GOODIX_PACK_HEADER + length)
+  /* Packs are zero-padded to whole USB chunks and never start with zero. */
+  while (padding < stream->len && stream->data[padding] == 0)
+    padding++;
+  g_byte_array_remove_range (stream, 0, padding);
+  if (stream->len < GOODIX_PACK_HEADER)
+    return G_IO_STATUS_AGAIN;
+  if (!read_pack_header (stream->data, &length))
     {
-      gsize actual_length = 0;
-      gsize skip = 0;
-
-      if (!bulk_read (probe, chunk, &actual_length, GOODIX_TIMEOUT_MS, error))
-        return NULL;
-      while (stream->len == 0 && skip < actual_length && chunk[skip] == 0)
-        skip++;
-      if (!receive_made_progress (actual_length - skip, &no_progress_count, error))
-        return NULL;
-      g_byte_array_append (stream, chunk + skip, actual_length - skip);
-      if (stream->len >= GOODIX_PACK_HEADER && length == 0 &&
-          !read_pack_header (stream->data, &length))
-        {
-          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                               "Goodix pack header checksum mismatch");
-          return NULL;
-        }
-      if (length > GOODIX_MAX_MESSAGE)
-        {
-          g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                       "Invalid Goodix pack size: %zu", length);
-          return NULL;
-        }
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                           "Invalid Goodix pack header");
+      return G_IO_STATUS_ERROR;
     }
-
+  if (length > GOODIX_MAX_MESSAGE)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                   "Invalid Goodix pack size: %zu", length);
+      return G_IO_STATUS_ERROR;
+    }
+  if (stream->len < GOODIX_PACK_HEADER + length)
+    return G_IO_STATUS_AGAIN;
   if (stream->data[0] != GOODIX_PACK_MESSAGE)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
                    "Unexpected Goodix pack 0x%02x", stream->data[0]);
-      return NULL;
+      return G_IO_STATUS_ERROR;
     }
-  g_byte_array_remove_range (stream, 0, GOODIX_PACK_HEADER);
-  g_byte_array_set_size (stream, length);
-  if (!validate_message (stream->data, stream->len, error))
+  *message = g_byte_array_sized_new (length);
+  g_byte_array_append (*message, stream->data + GOODIX_PACK_HEADER, length);
+  g_byte_array_remove_range (stream, 0, GOODIX_PACK_HEADER + length);
+  return G_IO_STATUS_NORMAL;
+}
+
+/* Returns the protocol message carried by the next wrapped pack. */
+static GByteArray *
+receive_wrapped_message (Probe   *probe,
+                         GError **error)
+{
+  g_autoptr(GByteArray) message = NULL;
+  guint8 chunk[GOODIX_CHUNK_SIZE];
+  guint no_progress_count = 0;
+
+  for (;;)
+    {
+      gsize actual_length = 0;
+      gsize skip = 0;
+      GIOStatus status = take_wrapped_message (probe->stream, &message, error);
+
+      if (status == G_IO_STATUS_ERROR)
+        return NULL;
+      if (status == G_IO_STATUS_NORMAL)
+        break;
+      if (!bulk_read (probe, chunk, &actual_length, GOODIX_TIMEOUT_MS, error))
+        return NULL;
+      while (probe->stream->len == 0 && skip < actual_length && chunk[skip] == 0)
+        skip++;
+      if (!receive_made_progress (actual_length - skip, &no_progress_count, error))
+        return NULL;
+      g_byte_array_append (probe->stream, chunk + skip, actual_length - skip);
+    }
+
+  if (!validate_message (message->data, message->len, error))
     return NULL;
-  return g_steal_pointer (&stream);
+  return g_steal_pointer (&message);
 }
 
 static GByteArray *
@@ -439,9 +473,23 @@ preset_read_request (guint32 type,
   return 16;
 }
 
+static gboolean
+probes_any_pid (guint16 pid)
+{
+  (void) pid;
+  return TRUE;
+}
+
+static gboolean
+probes_533c (guint16 pid)
+{
+  return pid == 0x533c;
+}
+
 static const ProbeLayout probe_layouts[] = {
   {
     .name = "direct framing, interface 1",
+    .probes_pid = probes_any_pid,
     .interface = 1,
     .ep_out = 0x03,
     .ep_in = 0x81,
@@ -454,6 +502,7 @@ static const ProbeLayout probe_layouts[] = {
   },
   {
     .name = "wrapped framing, interface 0 (GM168SEC)",
+    .probes_pid = probes_533c,
     .interface = 0,
     .ep_out = 0x01,
     .ep_in = 0x83,
@@ -611,7 +660,8 @@ find_usb_layout (GUsbDevice *device,
         gboolean has_in = FALSE;
         gboolean has_out = FALSE;
 
-        if (g_usb_interface_get_number (iface) != layout->interface ||
+        if (!layout->probes_pid (g_usb_device_get_pid (device)) ||
+            g_usb_interface_get_number (iface) != layout->interface ||
             g_usb_interface_get_alternate (iface) != 0)
           continue;
         endpoints = g_usb_interface_get_endpoints (iface);
@@ -712,7 +762,8 @@ probe_device (GUsbDevice  *device,
   const guint8 firmware_payload[] = { 0x00, 0x00 };
   const guint8 chip_payload[] = { 0x00, 0x00, 0x00, 0x04, 0x00 };
   const guint8 otp_payload[] = { 0x00, 0x00 };
-  Probe probe = { .device = device };
+  g_autoptr(GByteArray) stream = g_byte_array_new ();
+  Probe probe = { .device = device, .stream = stream };
   guint8 psk_hash_request[16];
   gsize psk_hash_request_length;
   const guint8 *psk_hash;
@@ -954,6 +1005,33 @@ print_report (const ProbeReport *report,
     }
 }
 
+/* Checks that two packs and their padding arriving in one read both come
+ * out whole, carrying @message. */
+static gboolean
+self_test_wrapped_stream (const GByteArray *message)
+{
+  g_autoptr(GByteArray) stream = g_byte_array_new ();
+  g_autoptr(GByteArray) first = NULL;
+  g_autoptr(GByteArray) second = NULL;
+  g_autoptr(GByteArray) none = NULL;
+  g_autoptr(GError) error = NULL;
+  const guint8 padding[3] = { 0 };
+  guint8 header[GOODIX_PACK_HEADER];
+
+  write_pack_header (header, GOODIX_PACK_MESSAGE, message->len);
+  for (guint i = 0; i < 2; i++)
+    {
+      g_byte_array_append (stream, header, sizeof (header));
+      g_byte_array_append (stream, message->data, message->len);
+      g_byte_array_append (stream, padding, sizeof (padding));
+    }
+  return take_wrapped_message (stream, &first, &error) == G_IO_STATUS_NORMAL &&
+         take_wrapped_message (stream, &second, &error) == G_IO_STATUS_NORMAL &&
+         take_wrapped_message (stream, &none, &error) == G_IO_STATUS_AGAIN &&
+         first->len == message->len &&
+         memcmp (second->data, message->data, message->len) == 0;
+}
+
 static gboolean
 self_test (void)
 {
@@ -1022,6 +1100,11 @@ self_test (void)
     return FALSE;
   header[3] ^= 0x01;
   if (read_pack_header (header, &pack_length))
+    return FALSE;
+  write_pack_header (header, 0xC0, 0x14);
+  if (read_pack_header (header, &pack_length) ||
+      !self_test_wrapped_stream (message) ||
+      probe_layouts[1].probes_pid (0x5840) || !probe_layouts[1].probes_pid (0x533c))
     return FALSE;
 
   for (guint i = 0; i < 8; i++)
