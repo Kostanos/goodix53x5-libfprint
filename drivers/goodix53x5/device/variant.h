@@ -25,6 +25,8 @@ typedef enum
   GOODIX_FRAME_REJECTED,
   /* Rejected on an established session; counts towards restarting it. */
   GOODIX_FRAME_REJECTED_IN_SESSION,
+  /* Decrypted, but not an image; the session that decrypted it is sound. */
+  GOODIX_FRAME_INVALID,
 } GoodixFrameStatus;
 
 /* The one place the sensor families this driver runs differ: same chip and

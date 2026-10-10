@@ -206,8 +206,10 @@ goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
                              len - GOODIX_PACK_TLS_DATA_HDR, out_len) : NULL;
   if (*out && !goodix_wrapped_image_valid (*out, *out_len))
     {
+      /* The vendor restarts TLS only when the read itself fails. */
       fp_warn ("Rejecting a %zu-byte image without a valid CRC", *out_len);
       g_clear_pointer (out, g_free);
+      return GOODIX_FRAME_INVALID;
     }
   if (*out)
     return GOODIX_FRAME_DECRYPTED;

@@ -366,7 +366,8 @@ image_with_crc (gsize len)
 }
 
 /* Only a decrypted image of exactly the raw12 size with a matching CRC is
- * an image, as in FpParseImage; anything else counts against the session. */
+ * an image, as in FpParseImage; anything else is rejected, but leaves the
+ * session that decrypted it alone. */
 static void
 test_wrapped_image_check (void)
 {
@@ -399,15 +400,16 @@ test_wrapped_image_check (void)
                              "Rejecting a * image without a valid CRC");
       g_assert_cmpint (goodix_decrypt_frame_tls (self, payload->data, payload->len,
                                                  &out, &out_len),
-                       ==, GOODIX_FRAME_REJECTED_IN_SESSION);
+                       ==, GOODIX_FRAME_INVALID);
       g_test_assert_expected_messages ();
       g_assert_null (out);
     }
   g_clear_object (&action_cancel_token);
 }
 
-/* One rejected image restarts a 533c channel: OpenSSL fails every record
- * after a bad one, so waiting for a second would lose that image too. */
+/* The first TLS read that fails restarts a 533c channel, as the vendor's
+ * does: OpenSSL fails every record after a bad one. An image that decrypts
+ * but fails its CRC is rejected without a restart. */
 static void
 test_wrapped_first_image_error_restarts (void)
 {
@@ -416,16 +418,25 @@ test_wrapped_first_image_error_restarts (void)
   GoodixTransport idle = { .dev = dev };
   g_autoptr(TlsPeer) peer = NULL;
   g_autofree guint8 *image = image_with_crc (GOODIX_WRAPPED_IMAGE_LEN);
-  g_autoptr(GByteArray) bad = NULL;
+  g_autoptr(GByteArray) bad_crc = NULL;
+  g_autoptr(GByteArray) forged = NULL;
 
   peer = tls_session_establish (self);
   image[0] ^= 1;
-  bad = image_payload (peer, image, GOODIX_WRAPPED_IMAGE_LEN);
+  bad_crc = image_payload (peer, image, GOODIX_WRAPPED_IMAGE_LEN);
+  forged = image_payload (peer, image, GOODIX_WRAPPED_IMAGE_LEN);
+  forged->data[forged->len - 1] ^= 1;
 
   g_test_expect_message ("libfprint", G_LOG_LEVEL_WARNING, "Rejecting a * image*");
-  g_assert_false (goodix_rx_image (&idle, bad->data, bad->len));
+  g_assert_false (goodix_rx_image (&idle, bad_crc->data, bad_crc->len));
   g_test_assert_expected_messages ();
   g_assert_true (self->image_response_failed);
+  g_assert_false (self->gtls_restart_pending);
+
+  g_test_expect_message ("libfprint-goodix53x5", G_LOG_LEVEL_WARNING,
+                         "TLS record did not authenticate");
+  g_assert_false (goodix_rx_image (&idle, forged->data, forged->len));
+  g_test_assert_expected_messages ();
   g_assert_true (self->gtls_restart_pending);
   g_clear_object (&action_cancel_token);
 }

@@ -1131,7 +1131,7 @@ goodix_rx_image (GoodixTransport *operation, const guint8 *payload, gsize len)
        * status; an established frame failing to decrypt or decode sets it. */
       self->image_response_failed = TRUE;
     }
-  if (!frame)
+  if (!frame && status != GOODIX_FRAME_INVALID)
     goodix_count_image_error (self);
 
   if (operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending)
