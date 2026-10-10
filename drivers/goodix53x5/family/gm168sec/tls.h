@@ -34,6 +34,7 @@ gboolean   goodix_tls_handshake (GoodixTls    *tls,
                                  GBytes      **out,
                                  GError      **error);
 gboolean   goodix_tls_established (GoodixTls *tls);
+gboolean   goodix_tls_handshake_pending (GoodixTls *tls);
 
 /* Returns the plaintext of application-data records, or NULL when one does
  * not authenticate or the last is incomplete; either leaves the session

@@ -92,10 +92,24 @@ typedef enum {
   GOODIX_TLS_NUM_STATES,
 } GoodixTlsState;
 
+static void
+goodix_tls_received (FpDevice *dev, const GoodixTransportResult *result,
+                      GError *error, gpointer data)
+{
+  FpiSsm *ssm = data;
+
+  if (g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT))
+    g_clear_error (&error);
+  if (error)
+    fpi_ssm_mark_failed (ssm, error);
+  else
+    fpi_ssm_next_state (ssm);
+}
+
 /* Runs one TLS handshake attempt, the sensor being the client, reading the
  * PSK hash first when the sensor reported a power loss. Fails when the hash is
- * not this driver's, the sensor sends a record OpenSSL rejects, a reply takes
- * over 2 s, or the handshake runs out of steps. */
+ * not this driver's, the sensor sends a record OpenSSL rejects, or the
+ * handshake runs out of steps. */
 static void
 goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 {
@@ -141,7 +155,7 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case GOODIX_TLS_RECV:
-      goodix_recv_mcu (ssm, dev, GOODIX_CHANNEL_REPLY_TIMEOUT_MS, 0);
+      goodix_transport_wait_mcu (dev, 50, 0, goodix_tls_received, ssm);
       break;
 
     case GOODIX_TLS_STEP:
@@ -170,6 +184,9 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       /* The Geneva handshake sends nothing after the last record. */
       if (goodix_tls_established (self->tls))
         fpi_ssm_mark_completed (ssm);
+      else if (!goodix_tls_handshake_pending (self->tls))
+        fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                              FP_DEVICE_ERROR_PROTO, "TLS handshake did not finish in ten steps"));
       else
         fpi_ssm_jump_to_state (ssm, GOODIX_TLS_RECV);
       break;

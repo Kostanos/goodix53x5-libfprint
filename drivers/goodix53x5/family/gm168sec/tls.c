@@ -166,6 +166,12 @@ goodix_tls_established (GoodixTls *tls)
   return SSL_is_init_finished (tls->ssl);
 }
 
+gboolean
+goodix_tls_handshake_pending (GoodixTls *tls)
+{
+  return tls->handshake_calls < GOODIX_TLS_MAX_HANDSHAKE_CALLS;
+}
+
 /* Checks whether @records is a run of whole TLS records, each its header
  * and the length that header announces. OpenSSL would keep a cut
  * record, even a bare header, for the next call and fail that one instead. */
