@@ -129,6 +129,7 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 
     case GOODIX_TLS_REQUEST:
       goodix_transport_reset_mcu (dev);
+      self->mcu_ready = FALSE;
       g_clear_pointer (&self->tls, goodix_tls_free);
       self->tls = goodix_tls_new (self->psk, GOODIX_PSK_LEN, &error);
       if (!self->tls)
