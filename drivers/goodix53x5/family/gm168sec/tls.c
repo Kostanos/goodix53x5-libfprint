@@ -11,7 +11,7 @@
 #define FP_COMPONENT "goodix53x5"
 
 #include "drivers_api.h"
-#include "device/tls.h"
+#include "family/gm168sec/tls.h"
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>

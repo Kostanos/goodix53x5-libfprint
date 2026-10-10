@@ -26,7 +26,6 @@
 #include "goodix53x5.h"
 #include "device/proto.h"
 #include "device/crypto.h"
-#include "device/tls.h"
 #include "family.h"
 #include "device/debug.h"
 #include "device/base.h"
@@ -99,6 +98,7 @@ typedef struct
 
 typedef struct _GoodixTransport GoodixTransport;
 typedef struct _GoodixReader GoodixReader;
+typedef struct _GoodixTls GoodixTls;
 
 /* HAL +0x1e0: requested mode, independent of coordinator and FDT wait state. */
 typedef enum

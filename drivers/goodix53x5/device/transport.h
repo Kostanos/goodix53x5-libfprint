@@ -52,6 +52,21 @@ typedef struct
   gboolean restart_gtls;
 } GoodixTransportResult;
 
+/* One row of the native command table: the 53x5 ACK and data budgets, the
+ * response slot a reply lands in and whether the command is retried. */
+typedef struct
+{
+  guint8 command;
+  guint ack_ms;
+  guint response_ms;
+  GoodixResponseSlot response_slot;
+  gboolean retry;
+} GoodixCommandPolicy;
+
+/* Returns the native table's row for the command with wire byte @command,
+ * or NULL when the table does not list it. */
+const GoodixCommandPolicy *goodix_cmd_policy (guint8 command);
+
 /* Error ownership transfers to done. Result is borrowed for that call only.
  * The completed operation is detached before caller code can submit another. */
 typedef void (*GoodixTransportDone) (FpDevice *dev,

@@ -27,6 +27,7 @@
 #include "device/persistence.h"
 #include "device/transport.h"
 #include "device/scan.h"
+#include "family/gm168sec/tls.h"
 
 #include <string.h>
 

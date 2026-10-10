@@ -16,7 +16,10 @@ static void capture_setup (FpDevice *, GoodixMilanGeneration *);
 #define goodix_milan_generation_prepare_setup capture_setup
 #define g_get_monotonic_time test_monotonic_time
 #include "drivers/goodix53x5/device/transport.c"
-#include "drivers/goodix53x5/device/wrapped.c"
+#include "drivers/goodix53x5/family/htsec/htsec.c"
+#include "drivers/goodix53x5/family/htsec/gtls.c"
+#include "drivers/goodix53x5/family/gm168sec/gm168sec.c"
+#include "drivers/goodix53x5/family/gm168sec/channel.c"
 #include "drivers/goodix53x5/device/commands.c"
 #include "drivers/goodix53x5/device/scan.c"
 static gboolean idle_test_release (void);

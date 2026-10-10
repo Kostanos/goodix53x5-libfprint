@@ -18,8 +18,8 @@
 #include "driver-private.h"
 #include "device/transport.h"
 #include "device/commands.h"
-#include "device/session.h"
-#include "device/crypto.h"
+#include "family/gm168sec/gm168sec.h"
+#include "family/gm168sec/tls.h"
 
 #include <string.h>
 
@@ -33,18 +33,10 @@
 #define GOODIX_PACK_FAMILY_MESSAGE 0xa
 #define GOODIX_PACK_FAMILY_TLS     0xb
 #define GOODIX_PACK_TLS_PREFIXED   0x02
-#define GOODIX_PACK_TLS_DATA_HDR   9
 /* The largest TLS record RFC 5246 allows (2^14 + 2048 bytes and its 5-byte
  * header) behind the prefix; a longer pack is a misread header. */
 #define GOODIX_PACK_MAX_PAYLOAD    (GOODIX_PACK_TLS_DATA_HDR + GOODIX_TLS_RECORD_HEADER + \
                                     16384 + 2048)
-
-/* FpParseImage takes exactly the raw12 pixels and their CRC. */
-#define GOODIX_WRAPPED_IMAGE_LEN (GOODIX_SENSOR_RAW12_BYTES + 4)
-
-/* 533c ships with the all-zero PSK; this slot holds its SHA-256. */
-#define GOODIX_WRAPPED_PSK_HASH_TYPE 0xbb020001
-#define GOODIX_PSK_HASH_LEN          32
 
 /* Returns the checksum a pack header carries in its fourth byte. */
 static guint8
@@ -186,37 +178,6 @@ goodix_receive_wrapped (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
     }
 }
 
-/* Checks whether @image is a whole raw12 image whose trailing CRC, in the
- * sensor's byte order, matches its pixels. */
-static gboolean
-goodix_wrapped_image_valid (const guint8 *image, gsize len)
-{
-  return len == GOODIX_WRAPPED_IMAGE_LEN &&
-         goodix_crypto_crc32_mpeg2 (image, GOODIX_SENSOR_RAW12_BYTES) ==
-         goodix_crypto_decode_u32 (image + GOODIX_SENSOR_RAW12_BYTES);
-}
-
-static GoodixFrameStatus
-goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
-                          gsize len, guint8 **out, gsize *out_len)
-{
-  gboolean established = self->tls && goodix_tls_established (self->tls);
-
-  *out = established && len > GOODIX_PACK_TLS_DATA_HDR ?
-         goodix_tls_decrypt (self->tls, payload + GOODIX_PACK_TLS_DATA_HDR,
-                             len - GOODIX_PACK_TLS_DATA_HDR, out_len) : NULL;
-  if (*out && !goodix_wrapped_image_valid (*out, *out_len))
-    {
-      /* The vendor restarts TLS only when the read itself fails. */
-      fp_warn ("Rejecting a %zu-byte image without a valid CRC", *out_len);
-      g_clear_pointer (out, g_free);
-      return GOODIX_FRAME_INVALID;
-    }
-  if (*out)
-    return GOODIX_FRAME_DECRYPTED;
-  return established ? GOODIX_FRAME_REJECTED_IN_SESSION : GOODIX_FRAME_REJECTED;
-}
-
 /* Checks whether @firmware parses as chip_platform_mode_version, such as
  * GF5288_GM168SEC_APP_13016, and names the GM168 or GM168SEC platform, as
  * the vendor's SelfCheck requires. */
@@ -242,143 +203,10 @@ goodix_wrapped_command_budget (guint8 command, guint *ack_ms, guint *response_ms
   *response_ms = 1500;
 }
 
-static void
+void
 goodix_read_psk_hash_wrapped (FpiSsm *ssm, FpDevice *dev)
 {
   goodix_cmd_preset_read (ssm, dev, GOODIX_WRAPPED_PSK_HASH_TYPE, GOODIX_PSK_HASH_LEN);
-}
-
-/* OpenSSL returns a flight; the sensor receives one pack per TLS record. */
-static void
-goodix_tls_send_handler (FpiSsm *ssm, FpDevice *dev)
-{
-  GBytes *out = fpi_ssm_get_data (ssm);
-  gsize len;
-  const guint8 *data = g_bytes_get_data (out, &len);
-  g_autoptr(GError) error = NULL;
-
-  if (g_cancellable_set_error_if_cancelled (goodix_session_io_cancellable (dev), &error))
-    {
-      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-      return;
-    }
-
-  if (fpi_ssm_get_cur_state (ssm) == 1)
-    /* TOD's write and send callback sleep 1 + 2 ms, even on the last record. */
-    fpi_ssm_jump_to_state_delayed (ssm, 0, 3);
-  else if (!len)
-    fpi_ssm_mark_completed (ssm);
-  else
-    {
-      gsize record_len = GOODIX_TLS_RECORD_HEADER + (data[3] << 8 | data[4]);
-      g_autoptr(GBytes) record = g_bytes_new_from_bytes (out, 0, record_len);
-      GBytes *remaining = g_bytes_new_from_bytes (out, record_len, len - record_len);
-
-      fpi_ssm_set_data (ssm, remaining, (GDestroyNotify) g_bytes_unref);
-      goodix_cmd_send_tls_record (ssm, dev, record);
-    }
-}
-
-typedef enum {
-  GOODIX_TLS_PSK_REFRESH,
-  GOODIX_TLS_PSK_CHECK,
-  GOODIX_TLS_REQUEST,
-  GOODIX_TLS_RECV,
-  GOODIX_TLS_STEP,
-  GOODIX_TLS_SENT,
-  GOODIX_TLS_NUM_STATES,
-} GoodixTlsState;
-
-/* Runs one TLS handshake attempt, the sensor being the client, reading the
- * PSK hash first when the sensor reported a power loss. Fails when the hash is
- * not this driver's, the sensor sends a record OpenSSL rejects, a reply takes
- * over 2 s, or the handshake runs out of steps. */
-static void
-goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
-{
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  g_autoptr(GError) error = NULL;
-
-  if (g_cancellable_set_error_if_cancelled (goodix_session_io_cancellable (dev), &error))
-    {
-      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-      return;
-    }
-
-  switch ((GoodixTlsState) fpi_ssm_get_cur_state (ssm))
-    {
-    case GOODIX_TLS_PSK_REFRESH:
-      if (!self->psk_refresh_pending)
-        fpi_ssm_jump_to_state (ssm, GOODIX_TLS_REQUEST);
-      else
-        goodix_read_psk_hash_wrapped (ssm, dev);
-      break;
-
-    case GOODIX_TLS_PSK_CHECK:
-      if (!goodix_require_current_psk (dev, &error))
-        {
-          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-          return;
-        }
-      self->psk_refresh_pending = FALSE;
-      fpi_ssm_next_state (ssm);
-      break;
-
-    case GOODIX_TLS_REQUEST:
-      goodix_transport_reset_mcu (dev);
-      g_clear_pointer (&self->tls, goodix_tls_free);
-      self->tls = goodix_tls_new (self->psk, GOODIX_PSK_LEN, &error);
-      if (!self->tls)
-        {
-          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-          return;
-        }
-      goodix_cmd_tls_request (ssm, dev);
-      break;
-
-    case GOODIX_TLS_RECV:
-      goodix_recv_mcu (ssm, dev, GOODIX_CHANNEL_REPLY_TIMEOUT_MS, 0);
-      break;
-
-    case GOODIX_TLS_STEP:
-      {
-        g_autoptr(GBytes) out = NULL;
-        const guint8 *in = NULL;
-        gsize in_len = 0;
-
-        if (self->mcu_reply)
-          in = g_bytes_get_data (self->mcu_reply, &in_len);
-        if (!goodix_tls_handshake (self->tls, in, in_len, &out, &error))
-          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-        else if (out)
-          {
-            FpiSsm *send = fpi_ssm_new (dev, goodix_tls_send_handler, 2);
-
-            fpi_ssm_set_data (send, g_steal_pointer (&out), (GDestroyNotify) g_bytes_unref);
-            fpi_ssm_start_subsm (ssm, send);
-          }
-        else
-          fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_TLS_SENT:
-      /* The Geneva handshake sends nothing after the last record. */
-      if (goodix_tls_established (self->tls))
-        fpi_ssm_mark_completed (ssm);
-      else
-        fpi_ssm_jump_to_state (ssm, GOODIX_TLS_RECV);
-      break;
-
-    case GOODIX_TLS_NUM_STATES:
-      g_assert_not_reached ();
-    }
-}
-
-static FpiSsm *
-goodix_tls_attempt_new (FpDevice *dev)
-{
-  return fpi_ssm_new (dev, goodix_tls_ssm_handler, GOODIX_TLS_NUM_STATES);
 }
 
 const GoodixFamily goodix_family_gm168sec = {

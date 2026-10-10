@@ -29,10 +29,6 @@
 
 #include <string.h>
 
-/* USB endpoints — interface 1, CDC Data class */
-#define GOODIX_EP_OUT (0x03 | FPI_USB_ENDPOINT_OUT)
-#define GOODIX_EP_IN  (0x01 | FPI_USB_ENDPOINT_IN)
-
 /* USB chunk size */
 #define GOODIX_USB_READ_SIZE 0x8000
 #define GOODIX_MCU_RX_SIZE (0x40000)
@@ -114,15 +110,6 @@ goodix_transport_is_idle (GoodixTransport *operation)
  * GLib measures elapsed time, rather than Sleep(1)/Wait(50) poll counts.
  * Register 82 here is the sized/chip adapter (200), not the factory two-byte
  * adapter (500). Unknown commands retain their existing fallback policy. */
-typedef struct
-{
-  guint8 command;
-  guint ack_ms;
-  guint response_ms;
-  GoodixResponseSlot response_slot;
-  gboolean retry;
-} GoodixCommandPolicy;
-
 static const GoodixCommandPolicy command_policies[] = {
   { 0x32, 500, 0, GOODIX_RESPONSE_NONE, TRUE },
   { 0x34, 500, 0, GOODIX_RESPONSE_NONE, TRUE },
@@ -143,7 +130,7 @@ static const GoodixCommandPolicy command_policies[] = {
 
 G_STATIC_ASSERT (GOODIX_RESPONSE_COUNT <= 8);
 
-static const GoodixCommandPolicy *
+const GoodixCommandPolicy *
 goodix_cmd_policy (guint8 command)
 {
   for (guint i = 0; i < G_N_ELEMENTS (command_policies); i++)
@@ -165,17 +152,6 @@ static guint8
 goodix_response_bit (GoodixResponseSlot slot)
 {
   return slot == GOODIX_RESPONSE_NONE ? 0 : 1u << slot;
-}
-
-/* The 53x5 native budgets: the command table, with fixed fallbacks for
- * commands it does not list. */
-static void
-goodix_direct_command_budget (guint8 command, guint *ack_ms, guint *response_ms)
-{
-  const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
-
-  *ack_ms = policy ? policy->ack_ms : GOODIX_ACK_TIMEOUT;
-  *response_ms = policy && policy->response_ms ? policy->response_ms : GOODIX_DATA_TIMEOUT;
 }
 
 static void
@@ -411,32 +387,6 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
     goodix_transport_ack (operation);
   else
     goodix_transport_receive (operation, operation->ack_timeout_ms);
-}
-
-/* Returns @msg split into 64-byte writes. Continuation chunks prepend the
- * command byte | 1 and carry up to 63 more bytes of message data. */
-static guint8 *
-goodix_frame_direct (const guint8 *msg, gsize msg_len, gsize *out_len)
-{
-  gsize first_len = MIN (msg_len, GOODIX_USB_CHUNK_SIZE);
-  gsize total_chunks = 1 + (msg_len - first_len + 62) / 63;
-  gsize padded_len = total_chunks * GOODIX_USB_CHUNK_SIZE;
-  guint8 *chunked = g_malloc0 (padded_len);
-  gsize src_offset = first_len;
-
-  memcpy (chunked, msg, first_len);
-  for (gsize dst_offset = GOODIX_USB_CHUNK_SIZE;
-       dst_offset < padded_len; dst_offset += GOODIX_USB_CHUNK_SIZE)
-    {
-      gsize data_in_chunk = MIN (63, msg_len - src_offset);
-
-      chunked[dst_offset] = msg[0] | 1;
-      memcpy (chunked + dst_offset + 1, msg + src_offset, data_in_chunk);
-      src_offset += data_in_chunk;
-    }
-
-  *out_len = padded_len;
-  return chunked;
 }
 
 /* The ACK clock starts after OUT completion. IN stays posted during writes. */
@@ -1200,84 +1150,6 @@ goodix_rx_image (GoodixTransport *operation, const guint8 *payload, gsize len)
     }
   return FALSE;
 }
-
-/* Native posts one 0x8000-byte read and traverses that capacity in 64-byte
- * cells, gated by nonzero received length and first byte. Only transferred
- * bytes are available here; never parse the unfilled allocation suffix. */
-static void
-goodix_receive_direct (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
-                       const guint8 *data, gsize len)
-{
-  if (len && data[0])
-    for (gsize offset = 0; offset < len; offset += GOODIX_USB_CHUNK_SIZE)
-      goodix_rx_cell (operation, data + offset, MIN (GOODIX_USB_CHUNK_SIZE, len - offset));
-}
-
-/* A GTLS frame counts against an established session only once it consumed
- * the HMAC counter. */
-static GoodixFrameStatus
-goodix_decrypt_frame_gtls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
-                           gsize len, guint8 **out, gsize *out_len)
-{
-  guint32 counter = self->gtls.hmac_server_counter;
-
-  *out = goodix_crypto_gtls_decrypt_sensor_data (&self->gtls, payload, len, out_len);
-  if (*out)
-    return GOODIX_FRAME_DECRYPTED;
-  return self->gtls.hmac_server_counter != counter && self->gtls.state == 5 ?
-         GOODIX_FRAME_REJECTED_IN_SESSION : GOODIX_FRAME_REJECTED;
-}
-
-/* 53x5 native checks no MCU platform. */
-static gboolean
-goodix_direct_self_check (const char *firmware)
-{
-  (void) firmware;
-  return TRUE;
-}
-
-static void
-goodix_read_psk_hash_direct (FpiSsm *ssm, FpDevice *dev)
-{
-  goodix_cmd_production_read (ssm, dev, goodix_family_htsec.psk_hash_type);
-}
-
-const GoodixFamily goodix_family_htsec = {
-  .link = {
-    .usb_interface = 1,
-    .ep_in = GOODIX_EP_IN,
-    .ep_out = GOODIX_EP_OUT,
-    .frame = goodix_frame_direct,
-    .frame_record = NULL,
-    .receive = goodix_receive_direct,
-  },
-  .protocol = {
-    .wake_payload_len = 2,
-    .ec_on_payload = { 0x01, 0x01, 0x00 },
-    .command_budget = goodix_direct_command_budget,
-    .ack_timeout_waits_for_data = FALSE,
-    .ack_reports_config_loss = FALSE,
-    .d0_requests_reconnect = FALSE,
-    .replies_match_command = FALSE,
-    .provisionable = TRUE,
-  },
-  .channel = {
-    .name = "GTLS",
-    /* deviceInit runs the three-attempt wrapper twice; the event restart once. */
-    .attempts = { .open = 6, .after_failed_read = 3, .reconnect = 3 },
-    .attempt_new = goodix_gtls_attempt_new,
-    .decrypt_frame = goodix_decrypt_frame_gtls,
-    .restart_on_first_image_error = FALSE,
-    .restart_disarms = FALSE,
-  },
-  .firmware_reads = 5,
-  .firmware_required = FALSE,
-  .self_check = goodix_direct_self_check,
-  .psk_checked_before_reset = FALSE,
-  .initial_reset_requests_irq = FALSE,
-  .psk_hash_type = 0xB003,
-  .read_psk_hash = goodix_read_psk_hash_direct,
-};
 
 /* Drops the partial wrapped pack kept for the next transfer, if any. */
 static void
