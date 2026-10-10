@@ -51,6 +51,23 @@ typedef enum
   GOODIX_SENSOR_EVENT_RECONNECT,
 } GoodixSensorEvent;
 
+typedef enum
+{
+  GOODIX_FDT_EVENT_DOWN = 0,
+  GOODIX_FDT_EVENT_UP,
+  GOODIX_FDT_EVENT_REVERSE,
+  GOODIX_FDT_EVENT_NONE,
+  GOODIX_FDT_EVENT_CONFIG,
+  GOODIX_FDT_EVENT_ESD,
+  GOODIX_FDT_EVENT_WAKE,
+  GOODIX_FDT_EVENT_DEACTIVATE,
+} GoodixFdtEventType;
+
+#define GOODIX_FDT_IRQ_DOWN 0x0002
+#define GOODIX_FDT_IRQ_REVERSE 0x0080
+#define GOODIX_FDT_IRQ_REVERSE_ALT 0x0082
+#define GOODIX_FDT_IRQ_UP 0x0200
+
 /* The family's rules of the shared MCU protocol. */
 typedef struct
 {
@@ -70,6 +87,9 @@ typedef struct
   gboolean (*wake_arm_up) (gboolean waiting_up);
   /* Publishes a valid ESD notice's IRQ in the family's response storage. */
   gboolean (*notice_irq) (FpiDeviceGoodix53x5 *self, const guint8 *payload, gsize len);
+  /* Validates and classifies a down/up notification. */
+  GoodixFdtEventType (*fdt_event) (FpiDeviceGoodix53x5 *self,
+                                  const guint8 *payload, gsize len, GError **error);
   /* TRUE where an ACK that does not come in time is not an error for a
    * command that expects data: the wait moves on to the data, as the
    * vendor's _IoHubExec does. FALSE retries the command. */

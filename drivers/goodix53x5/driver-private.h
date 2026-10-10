@@ -73,18 +73,6 @@ typedef struct
   guint16 low;
 } GoodixDynamicDacState;
 
-typedef enum
-{
-  GOODIX_FDT_EVENT_DOWN = 0,
-  GOODIX_FDT_EVENT_UP,
-  GOODIX_FDT_EVENT_REVERSE,
-  GOODIX_FDT_EVENT_NONE,
-  GOODIX_FDT_EVENT_CONFIG,
-  GOODIX_FDT_EVENT_ESD,
-  GOODIX_FDT_EVENT_WAKE,
-  GOODIX_FDT_EVENT_DEACTIVATE,
-} GoodixFdtEventType;
-
 typedef struct
 {
   /* Receive identity and reverse predecessor travel with the coalesced slot;
@@ -215,6 +203,7 @@ struct _FpiDeviceGoodix53x5
    * Cleared only once that check passes, so it outlives a suspend. */
   gboolean psk_refresh_pending;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
+  guint16 manual_touch;
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];

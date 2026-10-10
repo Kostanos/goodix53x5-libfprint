@@ -158,6 +158,39 @@ goodix_htsec_rearm_after_capture (FpiDeviceGoodix53x5 *self)
   return TRUE;
 }
 
+static GoodixFdtEventType
+goodix_htsec_fdt_event (FpiDeviceGoodix53x5 *self, const guint8 *payload,
+                        gsize len, GError **error)
+{
+  (void) self;
+  if (len != 4 + GOODIX_FDT_BASE_LEN)
+    {
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "Unexpected FDT event length");
+      return GOODIX_FDT_EVENT_NONE;
+    }
+  switch (payload[0] | ((guint16) payload[1] << 8))
+    {
+    case 0:
+    case 1:
+    case 4:
+    case 8:
+    case 0x10:
+    case 0x20:
+    case 0x40:
+      return GOODIX_FDT_EVENT_NONE;
+    case GOODIX_FDT_IRQ_DOWN:
+      return GOODIX_FDT_EVENT_DOWN;
+    case GOODIX_FDT_IRQ_UP:
+      return GOODIX_FDT_EVENT_UP;
+    case GOODIX_FDT_IRQ_REVERSE:
+    case GOODIX_FDT_IRQ_REVERSE_ALT:
+      return GOODIX_FDT_EVENT_REVERSE;
+    default:
+      return GOODIX_FDT_EVENT_CONFIG;
+    }
+}
+
 const GoodixFamily goodix_family_htsec = {
   .link = {
     .usb_interface = 1,
@@ -176,6 +209,7 @@ const GoodixFamily goodix_family_htsec = {
     .repair_arm = goodix_htsec_repair_arm,
     .wake_arm_up = goodix_htsec_wake_arm_up,
     .notice_irq = goodix_htsec_notice_irq,
+    .fdt_event = goodix_htsec_fdt_event,
     .ack_timeout_waits_for_data = FALSE,
     .event = goodix_htsec_event,
     .reply_answers = goodix_htsec_reply_answers,

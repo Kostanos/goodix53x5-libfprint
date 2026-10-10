@@ -30,11 +30,6 @@
 
 #define GOODIX_PROTO_CMD_IMAGE 0x00
 
-#define GOODIX_FDT_IRQ_DOWN 0x0002
-#define GOODIX_FDT_IRQ_REVERSE 0x0080
-#define GOODIX_FDT_IRQ_REVERSE_ALT 0x0082
-#define GOODIX_FDT_IRQ_UP 0x0200
-
 /* HV value for image capture */
 #define GOODIX_HV_VALUE 6
 
@@ -836,7 +831,7 @@ goodix_cmd_parse_fdt_event (FpDevice                 *dev,
   guint8 expected_command;
   const guint8 *payload;
   gsize payload_len;
-  guint16 irq;
+  g_autoptr(GError) event_error = NULL;
 
   g_return_val_if_fail (out_type != NULL, FALSE);
   g_return_val_if_fail (out_event != NULL, FALSE);
@@ -866,8 +861,7 @@ goodix_cmd_parse_fdt_event (FpDevice                 *dev,
 
   /* [irq_status(2)][touch_flag(2)][fdt_data(GOODIX_FDT_BASE_LEN)] */
   if (category != GOODIX_PROTO_CATEGORY_FDT ||
-      command != expected_command ||
-      payload_len < 4 + GOODIX_FDT_BASE_LEN)
+      command != expected_command)
     {
       g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
                    "Unexpected FDT event: armed=0x%02x cat=0x%02x cmd=0x%02x len=%zu",
@@ -875,44 +869,25 @@ goodix_cmd_parse_fdt_event (FpDevice                 *dev,
       return FALSE;
     }
 
-  irq = payload[0] | ((guint16) payload[1] << 8);
-  switch (irq)
+  *out_type = goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.fdt_event (
+    FPI_DEVICE_GOODIX53X5 (dev), payload, payload_len, &event_error);
+  if (event_error)
     {
-    case 0:
-    case 1:
-    case 4:
-    case 8:
-    case 0x10:
-    case 0x20:
-    case 0x40:
-      /* Native selector-1/2 no-ops do not publish raw data or wake the worker. */
-      *out_type = GOODIX_FDT_EVENT_NONE;
+      g_propagate_error (error, g_steal_pointer (&event_error));
+      return FALSE;
+    }
+  if (*out_type == GOODIX_FDT_EVENT_NONE)
+    {
       out_event->pending = FALSE;
       return TRUE;
-
-    case GOODIX_FDT_IRQ_DOWN:
-      *out_type = GOODIX_FDT_EVENT_DOWN;
-      break;
-
-    case GOODIX_FDT_IRQ_UP:
-      *out_type = GOODIX_FDT_EVENT_UP;
-      break;
-
-    case GOODIX_FDT_IRQ_REVERSE:
-    case GOODIX_FDT_IRQ_REVERSE_ALT:
-      *out_type = GOODIX_FDT_EVENT_REVERSE;
-      break;
-
-    default:
-      /* Native event 0x14 replaces only the worker notification. Its payload
-       * is not a raw/touch sample and must not replace any retained base. */
-      *out_type = GOODIX_FDT_EVENT_CONFIG;
-      out_event->irq = irq;
+    }
+  out_event->irq = payload[0] | ((guint16) payload[1] << 8);
+  if (*out_type == GOODIX_FDT_EVENT_CONFIG)
+    {
       out_event->pending = TRUE;
       return TRUE;
     }
 
-  out_event->irq = irq;
   out_event->touch_flag = payload[2] | ((guint16) payload[3] << 8);
   memcpy (out_event->raw, payload + 4, GOODIX_FDT_BASE_LEN);
   out_event->pending = TRUE;

@@ -947,10 +947,7 @@ goodix_rx_cell (GoodixTransport *operation,
               GoodixProfile9FdtWaitMode mode = command == GOODIX_PROTO_CMD_FDT_DOWN ?
                 GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
 
-              if (payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
-                event_error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                        "Unexpected FDT event length");
-              if (event_error || !goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &event_error))
+              if (!goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &event_error))
                 {
                   error = g_steal_pointer (&event_error);
                   goto protocol_error;

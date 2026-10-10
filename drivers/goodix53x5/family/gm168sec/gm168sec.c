@@ -330,6 +330,54 @@ goodix_gm168sec_notice_irq (FpiDeviceGoodix53x5 *self, const guint8 *payload, gs
   return TRUE;
 }
 
+static GoodixFdtEventType
+goodix_gm168sec_fdt_event (FpiDeviceGoodix53x5 *self, const guint8 *payload,
+                          gsize len, GError **error)
+{
+  GoodixFdtEventType type;
+  guint16 irq;
+
+  if (len < 2)
+    goto short_event;
+  irq = payload[0] | ((guint16) payload[1] << 8);
+  switch (irq)
+    {
+    case 0:
+    case 1:
+    case 4:
+    case 8:
+    case 0x10:
+    case 0x20:
+    case 0x40:
+      return GOODIX_FDT_EVENT_NONE;
+    case GOODIX_FDT_IRQ_DOWN:
+      type = GOODIX_FDT_EVENT_DOWN;
+      break;
+    case GOODIX_FDT_IRQ_UP:
+      type = GOODIX_FDT_EVENT_UP;
+      break;
+    case GOODIX_FDT_IRQ_REVERSE:
+    case GOODIX_FDT_IRQ_REVERSE_ALT:
+      type = GOODIX_FDT_EVENT_REVERSE;
+      break;
+    case 0x100:
+      type = GOODIX_FDT_EVENT_NONE;
+      break;
+    default:
+      return GOODIX_FDT_EVENT_CONFIG;
+    }
+  if (len < 4 + GOODIX_FDT_BASE_LEN)
+    goto short_event;
+  if (irq == 0x100)
+    self->manual_touch = payload[2] | ((guint16) payload[3] << 8);
+  return type;
+
+short_event:
+  g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                       "Unexpected FDT event length");
+  return GOODIX_FDT_EVENT_NONE;
+}
+
 const GoodixFamily goodix_family_gm168sec = {
   .link = {
     .usb_interface = 0,
@@ -350,6 +398,7 @@ const GoodixFamily goodix_family_gm168sec = {
     .repair_arm = goodix_gm168sec_repair_arm,
     .wake_arm_up = goodix_gm168sec_wake_arm_up,
     .notice_irq = goodix_gm168sec_notice_irq,
+    .fdt_event = goodix_gm168sec_fdt_event,
     .ack_timeout_waits_for_data = TRUE,
     .event = goodix_gm168sec_event,
     .reply_answers = goodix_gm168sec_reply_answers,
