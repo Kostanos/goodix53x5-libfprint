@@ -27,14 +27,14 @@ secure element, with its own USB framing and TLS 1.2-PSK instead of GTLS. It is
 tested on one XPS 13 9310 (open, enrollment, matching and rejection), and its
 transport is not validated byte for byte against the vendor driver as the
 `27c6:5335` path is. The driver never writes a PSK to it, so the sensor must
-still hold its all-zero default PSK, which the detect script below checks.
+hold the all-zero default PSK or have its matching Windows key imported. The
+detect script below checks for the default key.
 
 > [!WARNING]
-> **533c and Windows Hello.** Dell's Windows driver gives the 533c a random
-> PSK, sealed with Windows DPAPI, so this driver cannot read it. Once Windows
-> Hello has used the sensor, the driver refuses to open it, and the key import
-> that serves the other sensors in dual boot does not work for 533c. Dual boot
-> with Windows Hello is therefore not supported on 533c yet.
+> **533c and Windows Hello.** Once Dell's Windows driver has used a 533c, the
+> sensor holds a key set by Windows, and this driver refuses to open it until
+> you [import that key](WINDOWS-DUAL-BOOT.md#533c-windows-key-import). The
+> import has not been tested on hardware yet.
 
 Before installing on an unlisted Goodix USB device, run:
 

@@ -1,20 +1,23 @@
 # Windows Dual-Boot PSK Migration
 
-Windows and this Linux driver use a GTLS pre-shared key to protect traffic with
+Windows and this Linux driver use a pre-shared key to protect traffic with
 the fingerprint sensor. The key is independent of the fingerprint templates
 stored by each operating system, so migration does not require re-enrollment.
 
 This is an optional, one-time migration. Without
 `/var/lib/fprint/goodix53x5.psk`, the driver retains its normal behavior and
-automatically provisions the all-zero Linux PSK when necessary. When that file
-exists, the driver uses the imported key and refuses to overwrite a sensor that
-does not match it.
+automatically provisions the all-zero Linux PSK when necessary, except on the
+533c, which it never provisions. When that file exists, the driver uses the
+imported key and refuses to overwrite a sensor that does not match it.
 
 > [!WARNING]
 > The PSK grants access to encrypted sensor traffic. Keep it private, never
 > commit it, and delete transfer copies after installation.
 
 ## How It Works
+
+The steps below do not apply to `27c6:533c`; it has its own
+[procedure](#533c-windows-key-import).
 
 The fingerprint reader has persistent memory shared by both operating systems.
 When Windows Hello starts after Linux has used the all-zero key, the official
@@ -110,3 +113,51 @@ If an imported key does not match, the driver fails without changing the
 sensor. Re-extract the current Windows key. Removing
 `/var/lib/fprint/goodix53x5.psk` intentionally returns to Linux-only mode, where
 the normal driver may replace the Windows key with its all-zero key.
+
+## 533c Windows Key Import
+
+> [!WARNING]
+> This procedure for the Dell XPS 13 9310 (`27c6:533c`) has not been tested on
+> hardware or on Windows yet. Windows may also update the sensor firmware,
+> and this driver is only tested on `GF5288_GM168SEC_APP_13016`. Please report
+> how it goes.
+
+On the 533c, Dell's Windows driver sets its own random key on the sensor and
+keeps a copy that only that Windows installation can unseal. This driver never
+changes the key on a 533c, so Linux needs a copy of the Windows key. The import
+reads from the sensor but never writes to it. You need a USB stick or another
+drive that both systems can read.
+
+1. Install this driver and mask `fprintd` as in step 1. Boot Windows and sign
+   in once with your fingerprint, so that Dell's driver sets its key. Do this
+   even if Linux fingerprint already works. Return to Linux and keep `fprintd`
+   masked until step 5.
+2. Save the sealed key to the shared drive:
+
+   ```sh
+   sudo ./scripts/extract-windows-psk.sh --533c /path/to/drive/goodix533c.dpapi
+   ```
+
+3. Copy `scripts/unprotect-windows-psk.ps1` to the drive and boot Windows. Open
+   Windows PowerShell as administrator and run the following, with `E:`
+   replaced by the drive letter:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File E:\unprotect-windows-psk.ps1 -BlobFile E:\goodix533c.dpapi -OutputFile E:\goodix533c.psk
+   ```
+
+   If it reports that it could not unprotect the key, run it in the Windows
+   installation that last used the sensor.
+4. Boot Linux and install the key:
+
+   ```sh
+   sudo ./scripts/install-windows-psk.sh --533c /path/to/drive/goodix533c.psk
+   ```
+
+   The installer checks the key against the sensor and refuses one that does
+   not match. Add `--replace` if a key is already installed.
+5. Unmask `fprintd` and run `fprintd-verify` as in step 4. Once it works,
+   delete both files from the drive, then check that Windows Hello still works.
+
+Removing `/var/lib/fprint/goodix53x5.psk` does not reset a 533c. The driver
+refuses to open it again until the key is imported.

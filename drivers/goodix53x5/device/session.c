@@ -918,7 +918,8 @@ static GError *
 goodix_psk_mismatch_error (void)
 {
   return fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
-                                   "Sensor PSK does not match, and this sensor is never provisioned");
+                                   "Sensor PSK does not match. If Windows has used this sensor, "
+                                   "import its key as WINDOWS-DUAL-BOOT.md describes");
 }
 
 /* Sets @matches to whether the PSK hash the sensor just returned is the hash
