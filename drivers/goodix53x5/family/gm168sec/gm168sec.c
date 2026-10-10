@@ -254,6 +254,13 @@ goodix_gm168sec_event (guint8 category, guint8 command, const guint8 *payload, g
   return GOODIX_SENSOR_EVENT_NONE;
 }
 
+static gboolean
+goodix_gm168sec_wake_arm_up (gboolean waiting_up)
+{
+  (void) waiting_up;
+  return FALSE;
+}
+
 /* A reply answers a command only if its category and command are that
  * command's, as the vendor's IoHubNotifyDataIn checks. */
 static gboolean
@@ -320,6 +327,7 @@ const GoodixFamily goodix_family_gm168sec = {
     .command_budget = goodix_wrapped_command_budget,
     .retry_write = goodix_gm168sec_retry_write,
     .repair_arm = goodix_gm168sec_repair_arm,
+    .wake_arm_up = goodix_gm168sec_wake_arm_up,
     .ack_timeout_waits_for_data = TRUE,
     .event = goodix_gm168sec_event,
     .reply_answers = goodix_gm168sec_reply_answers,

@@ -90,6 +90,12 @@ goodix_htsec_repair_arm (guint8 status)
   return (status & 3) == 3;
 }
 
+static gboolean
+goodix_htsec_wake_arm_up (gboolean waiting_up)
+{
+  return waiting_up;
+}
+
 /* 53x5 native gives no message a meaning beyond its reply. */
 static GoodixSensorEvent
 goodix_htsec_event (guint8 category, guint8 command, const guint8 *payload, gsize len)
@@ -152,6 +158,7 @@ const GoodixFamily goodix_family_htsec = {
     .command_budget = goodix_htsec_command_budget,
     .retry_write = goodix_htsec_retry_write,
     .repair_arm = goodix_htsec_repair_arm,
+    .wake_arm_up = goodix_htsec_wake_arm_up,
     .ack_timeout_waits_for_data = FALSE,
     .event = goodix_htsec_event,
     .reply_answers = goodix_htsec_reply_answers,

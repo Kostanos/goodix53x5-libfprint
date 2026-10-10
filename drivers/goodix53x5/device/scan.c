@@ -597,8 +597,9 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
         if (data->event_type == GOODIX_FDT_EVENT_WAKE)
           {
             /* Ordinary screen-on 00dc84 has no requested-mode gate. */
-            fpi_ssm_jump_to_state (ssm, fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_UP ?
-                                   GOODIX_SCAN_COORD_RECOVERY_ARM_UP :
+            fpi_ssm_jump_to_state (ssm, goodix_family (self)->protocol.wake_arm_up (
+                                    fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_UP) ?
+                                    GOODIX_SCAN_COORD_RECOVERY_ARM_UP :
                                    GOODIX_SCAN_COORD_REARM_DOWN);
             return;
           }
