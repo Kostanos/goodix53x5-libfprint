@@ -213,6 +213,71 @@ goodix_wrapped_command_budget (guint8 command, guint *ack_ms, guint *response_ms
   *response_ms = 1500;
 }
 
+/* ACK flag 0x02, on any command, means the sensor lost its configuration
+ * and needs it downloaded again. */
+#define GOODIX_PROTO_ACK_FLAG_CONFIG_LOST 0x02
+
+/* An ACK flagging lost configuration reports that loss; a D0 message asks
+ * for a new secure-channel session rather than carrying channel bytes. */
+static GoodixSensorEvent
+goodix_gm168sec_event (guint8 category, guint8 command, const guint8 *payload, gsize len)
+{
+  if (category == GOODIX_PROTO_CATEGORY_ACK && command == GOODIX_PROTO_CMD_ACK &&
+      len >= 2 && (payload[1] & GOODIX_PROTO_ACK_FLAG_CONFIG_LOST))
+    return GOODIX_SENSOR_EVENT_CONFIG_LOST;
+  if (category == GOODIX_PROTO_CATEGORY_MCU && command == 0)
+    return GOODIX_SENSOR_EVENT_RECONNECT;
+  return GOODIX_SENSOR_EVENT_NONE;
+}
+
+/* A reply answers a command only if its category and command are that
+ * command's, as the vendor's IoHubNotifyDataIn checks. */
+static gboolean
+goodix_gm168sec_reply_answers (guint8 category, guint8 command, const GoodixCmd *awaited)
+{
+  return category == awaited->category && command == awaited->command;
+}
+
+/* The download reply's first byte is 1 on success. */
+static gboolean
+goodix_gm168sec_download_succeeded (const guint8 *payload, gsize len)
+{
+  return len && payload[0] == 1;
+}
+
+/* Checks whether @cmd is a preset-slot read: e4 with a length, a zero
+ * offset, a slot and a zero word. A PSK write may also use e4, but its
+ * payload is a fragment header and data, never this. */
+static gboolean
+goodix_cmd_is_preset_read (const GoodixCmd *cmd)
+{
+  static const guint8 zero[4] = { 0 };
+
+  return cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION && cmd->command == 0x2 &&
+         cmd->payload_len == 16 && memcmp (cmd->payload + 4, zero, 4) == 0 &&
+         memcmp (cmd->payload + 12, zero, 4) == 0;
+}
+
+/* Checks whether @cmd could change what the sensor stores: any production
+ * command but a preset read (e0 and e2 writes, e4 used as a write), a
+ * firmware write (f0) or an APP erase (a4). */
+static gboolean
+goodix_cmd_writes_sensor (const GoodixCmd *cmd)
+{
+  if (cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION)
+    return !goodix_cmd_is_preset_read (cmd);
+  return (cmd->category == GOODIX_PROTO_CATEGORY_FIRMWARE && cmd->command == 0x0) ||
+         (cmd->category == GOODIX_PROTO_CATEGORY_SYSTEM && cmd->command == 0x2);
+}
+
+/* 533c returns no firmware in APP mode, so nothing could restore it: the
+ * driver never writes to the sensor. */
+static gboolean
+goodix_gm168sec_may_send (const GoodixCmd *cmd)
+{
+  return !goodix_cmd_writes_sensor (cmd);
+}
+
 const GoodixFamily goodix_family_gm168sec = {
   .link = {
     .usb_interface = 0,
@@ -229,11 +294,10 @@ const GoodixFamily goodix_family_gm168sec = {
     .ec_on_payload = { 0x01, 0x00, 0x01 },
     .command_budget = goodix_wrapped_command_budget,
     .ack_timeout_waits_for_data = TRUE,
-    .ack_reports_config_loss = TRUE,
-    .d0_requests_reconnect = TRUE,
-    .replies_match_command = TRUE,
-    /* 533c returns no firmware in APP mode, so nothing could restore it. */
-    .provisionable = FALSE,
+    .event = goodix_gm168sec_event,
+    .reply_answers = goodix_gm168sec_reply_answers,
+    .download_succeeded = goodix_gm168sec_download_succeeded,
+    .may_send = goodix_gm168sec_may_send,
   },
   .channel = {
     .name = "TLS",

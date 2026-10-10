@@ -189,8 +189,12 @@ struct _FpiDeviceGoodix53x5
   /* Native response events reset per send; cached bytes survive reset.
    * The manual cache retains metadata for Linux touch-flag consumers. */
   guint8 command_response_ready;
-  /* Configuration status, including the wrapped download's success byte. */
+  /* Configuration status of the last 9/2 reply. */
   guint8 config_response_status;
+  /* The last download (9/0) reply's status byte, and whether the family's
+   * protocol reads it as a failure. */
+  guint8   config_download_status;
+  gboolean config_download_failed;
   /* Receiver-owned decoded image, independent of the command ACK and of the
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;

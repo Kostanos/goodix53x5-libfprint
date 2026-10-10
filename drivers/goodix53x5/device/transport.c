@@ -33,10 +33,6 @@
 #define GOODIX_USB_READ_SIZE 0x8000
 #define GOODIX_MCU_RX_SIZE (0x40000)
 
-#define GOODIX_PROTO_CATEGORY_ACK     0x0B
-#define GOODIX_PROTO_CMD_ACK          0x00
-#define GOODIX_PROTO_ACK_FLAG_VALID   0x01
-#define GOODIX_PROTO_ACK_FLAG_CONFIG_LOST 0x02
 #define GOODIX_FDT_EVENT_PAYLOAD_LEN  (4 + GOODIX_FDT_BASE_LEN)
 #define GOODIX_PROTO_CMD_BYTE(category, command) \
   (((category) << 4) | ((command) << 1))
@@ -238,19 +234,6 @@ goodix_deadline_remaining (gint64 deadline_us)
   return remaining > 0 ? (guint) ((remaining + 999) / 1000) : 0;
 }
 
-/* Checks whether @cmd is a preset-slot read: e4 with a length, a zero
- * offset, a slot and a zero word. A PSK write may also use e4, but its
- * payload is a fragment header and data, never this. */
-static gboolean
-goodix_cmd_is_preset_read (const GoodixCmd *cmd)
-{
-  static const guint8 zero[4] = { 0 };
-
-  return cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION && cmd->command == 0x2 &&
-         cmd->payload_len == 16 && memcmp (cmd->payload + 4, zero, 4) == 0 &&
-         memcmp (cmd->payload + 12, zero, 4) == 0;
-}
-
 /* Checks whether @cmd downloads a sensor configuration. */
 static gboolean
 goodix_cmd_is_config_download (const GoodixCmd *cmd)
@@ -259,24 +242,11 @@ goodix_cmd_is_config_download (const GoodixCmd *cmd)
          cmd->command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD;
 }
 
-/* Checks whether @cmd could change what the sensor stores: any production
- * command but a preset read (e0 and e2 writes, e4 used as a write), a
- * firmware write (f0) or an APP erase (a4). */
-static gboolean
-goodix_cmd_writes_sensor (const GoodixCmd *cmd)
-{
-  if (cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION)
-    return !goodix_cmd_is_preset_read (cmd);
-  return (cmd->category == GOODIX_PROTO_CATEGORY_FIRMWARE && cmd->command == 0x0) ||
-         (cmd->category == GOODIX_PROTO_CATEGORY_SYSTEM && cmd->command == 0x2);
-}
-
-/* Checks whether @cmd would write to a sensor this driver never provisions,
- * whichever caller asks. */
+/* Checks whether the family's protocol refuses @cmd, whichever caller asks. */
 static gboolean
 goodix_cmd_refused (FpiDeviceGoodix53x5 *self, const GoodixCmd *cmd)
 {
-  return !goodix_family (self)->protocol.provisionable && goodix_cmd_writes_sensor (cmd);
+  return !goodix_family (self)->protocol.may_send (cmd);
 }
 
 /* Appends @payload to the category-D stream and signals its waiter. */
@@ -639,9 +609,8 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
                           (operation->phase == GOODIX_TRANSPORT_ACK ||
                            operation->phase == GOODIX_TRANSPORT_RESPONSE);
   gboolean config_failed = !error && operation->expect_data &&
-                           goodix_family (self)->protocol.ack_reports_config_loss &&
                            goodix_cmd_is_config_download (&operation->cmd) &&
-                           self->config_response_status != 1;
+                           self->config_download_failed;
 
   if (image_failed)
     error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO,
@@ -649,7 +618,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
   if (config_failed)
     error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                      "Configuration download failed: status %u",
-                                     self->config_response_status);
+                                     self->config_download_status);
   if (!error && operation->expect_data &&
       (operation->phase == GOODIX_TRANSPORT_ACK || operation->phase == GOODIX_TRANSPORT_RESPONSE))
     error = goodix_transport_select_response (operation);
@@ -720,20 +689,20 @@ goodix_transport_ack (GoodixTransport *operation)
 }
 
 /* Checks whether a reply for @slot answers another command than the one in
- * flight, on a family whose replies_match_command is set. A stale firmware
- * reply must not complete a reset that shares its slot. */
+ * flight, as the family's protocol decides. A stale firmware reply must not
+ * complete a reset that shares its slot. */
 static gboolean
 goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
                          guint8 category, guint8 command)
 {
   GoodixTransport *operation = self->transport;
 
-  return goodix_family (self)->protocol.replies_match_command && operation && !operation->record &&
+  return operation && !operation->record &&
          (operation->phase == GOODIX_TRANSPORT_SEND || operation->phase == GOODIX_TRANSPORT_ACK ||
           operation->phase == GOODIX_TRANSPORT_RESPONSE) &&
          (goodix_response_slot_is_shared (slot) ||
           (slot == GOODIX_RESPONSE_CONFIG && goodix_cmd_is_config_download (&operation->cmd))) &&
-         (category != operation->cmd.category || command != operation->cmd.command);
+         !goodix_family (self)->protocol.reply_answers (category, command, &operation->cmd);
 }
 
 /* Requests a new secure-channel session that arms finger-down, as the
@@ -814,23 +783,35 @@ goodix_rx_cell (GoodixTransport *operation,
           payload[0] == GOODIX_PROTO_CMD_BYTE (self->transport->cmd.category,
                                               self->transport->cmd.command))
         self->transport->ack_status = payload[1];
-      if (ack_packet && (payload[1] & GOODIX_PROTO_ACK_FLAG_CONFIG_LOST) &&
-          goodix_family (self)->protocol.ack_reports_config_loss)
-        {
-          if (!self->config_lost)
-            fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
-          self->config_lost = TRUE;
-          self->psk_refresh_pending = TRUE;
-          if (!self->config_restore_active)
-            self->config_restore_pending = TRUE;
-          /* A scan waiting for a finger restores the configuration first. */
-          if (operation->phase == GOODIX_TRANSPORT_EVENT)
-            {
-              goodix_proto_rx_reset (&self->rx);
+      if (self->reply_valid)
+        switch (goodix_family (self)->protocol.event (category, command, payload, payload_len))
+          {
+          case GOODIX_SENSOR_EVENT_CONFIG_LOST:
+            if (!self->config_lost)
+              fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
+            self->config_lost = TRUE;
+            self->psk_refresh_pending = TRUE;
+            if (!self->config_restore_active)
+              self->config_restore_pending = TRUE;
+            /* A scan waiting for a finger restores the configuration first. */
+            if (operation->phase == GOODIX_TRANSPORT_EVENT)
+              {
+                goodix_proto_rx_reset (&self->rx);
+                goodix_transport_complete (operation, NULL);
+                return;
+              }
+            break;
+          case GOODIX_SENSOR_EVENT_RECONNECT:
+            goodix_request_reconnect (self);
+            goodix_proto_rx_reset (&self->rx);
+            if (operation->phase == GOODIX_TRANSPORT_EVENT)
               goodix_transport_complete (operation, NULL);
-              return;
-            }
-        }
+            else
+              goto receive_more;
+            return;
+          case GOODIX_SENSOR_EVENT_NONE:
+            break;
+          }
 
       if (self->reply_valid)
         {
@@ -867,17 +848,6 @@ goodix_rx_cell (GoodixTransport *operation,
 
               goodix_proto_rx_reset (&self->rx);
               if (!completed)
-                goto receive_more;
-              return;
-            }
-          if (category == GOODIX_PROTO_CATEGORY_MCU && command == 0 &&
-              goodix_family (self)->protocol.d0_requests_reconnect)
-            {
-              goodix_request_reconnect (self);
-              goodix_proto_rx_reset (&self->rx);
-              if (operation->phase == GOODIX_TRANSPORT_EVENT)
-                goodix_transport_complete (operation, NULL);
-              else
                 goto receive_more;
               return;
             }
@@ -922,9 +892,12 @@ goodix_rx_cell (GoodixTransport *operation,
             }
           if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == 2)
             self->config_response_status = payload[0];
-          if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD &&
-              goodix_family (self)->protocol.ack_reports_config_loss)
-            self->config_response_status = payload_len ? payload[0] : 0;
+          if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD)
+            {
+              self->config_download_status = payload_len ? payload[0] : 0;
+              self->config_download_failed =
+                !goodix_family (self)->protocol.download_succeeded (payload, payload_len);
+            }
 
           /* DataFromDevice publishes these shared stores without a matching
            * command. Only A/0, A/1 and A/4 signal the version getter's event.

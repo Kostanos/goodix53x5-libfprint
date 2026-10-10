@@ -37,6 +37,18 @@ typedef struct
                       const guint8 *data, gsize len);
 } GoodixLink;
 
+/* What a message from the sensor means beyond being a reply. */
+typedef enum
+{
+  GOODIX_SENSOR_EVENT_NONE,
+  /* The sensor lost its configuration and keys; the scan restores the
+   * configuration and the next channel handshake re-checks the PSK. */
+  GOODIX_SENSOR_EVENT_CONFIG_LOST,
+  /* The sensor asks for a new secure-channel session, after which finger
+   * detection is armed again. */
+  GOODIX_SENSOR_EVENT_RECONNECT,
+} GoodixSensorEvent;
+
 /* The family's rules of the shared MCU protocol. */
 typedef struct
 {
@@ -52,19 +64,17 @@ typedef struct
    * command that expects data: the wait moves on to the data, as the
    * vendor's _IoHubExec does. FALSE retries the command. */
   gboolean ack_timeout_waits_for_data;
-  /* TRUE where ACK flag 0x02, on any command, means the sensor lost its
-   * configuration and needs it downloaded again. */
-  gboolean ack_reports_config_loss;
-  /* TRUE where a D0 message from the sensor asks for a new secure-channel
-   * session rather than carrying channel bytes. */
-  gboolean d0_requests_reconnect;
-  /* TRUE where a reply in a shared response slot answers a command only if
-   * its category and command are that command's, as the vendor's
-   * IoHubNotifyDataIn checks; 53x5 native lets selectors alias. */
-  gboolean replies_match_command;
-  /* FALSE where a failed PSK or production write could not be recovered
-   * from, so the driver never writes one. */
-  gboolean provisionable;
+  /* Returns the event a complete, valid message carries, or NONE. */
+  GoodixSensorEvent (*event) (guint8 category, guint8 command,
+                              const guint8 *payload, gsize len);
+  /* Checks whether a reply with @category/@command answers @awaited when
+   * both share a response slot. */
+  gboolean (*reply_answers) (guint8 category, guint8 command,
+                             const GoodixCmd *awaited);
+  /* Checks whether a configuration download reply reports success. */
+  gboolean (*download_succeeded) (const guint8 *payload, gsize len);
+  /* Checks whether the driver may send @cmd at all. */
+  gboolean (*may_send) (const GoodixCmd *cmd);
 } GoodixProtocol;
 
 typedef enum

@@ -70,6 +70,44 @@ goodix_receive_direct (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
       goodix_rx_cell (operation, data + offset, MIN (GOODIX_USB_CHUNK_SIZE, len - offset));
 }
 
+/* 53x5 native gives no message a meaning beyond its reply. */
+static GoodixSensorEvent
+goodix_htsec_event (guint8 category, guint8 command, const guint8 *payload, gsize len)
+{
+  (void) category;
+  (void) command;
+  (void) payload;
+  (void) len;
+  return GOODIX_SENSOR_EVENT_NONE;
+}
+
+/* 53x5 native lets selectors alias: any reply in the slot answers. */
+static gboolean
+goodix_htsec_reply_answers (guint8 category, guint8 command, const GoodixCmd *awaited)
+{
+  (void) category;
+  (void) command;
+  (void) awaited;
+  return TRUE;
+}
+
+/* The download reply's payload is scratch, not a status. */
+static gboolean
+goodix_htsec_download_succeeded (const guint8 *payload, gsize len)
+{
+  (void) payload;
+  (void) len;
+  return TRUE;
+}
+
+/* The driver provisions 53x5 sensors, so it may send any command. */
+static gboolean
+goodix_htsec_may_send (const GoodixCmd *cmd)
+{
+  (void) cmd;
+  return TRUE;
+}
+
 /* 53x5 native checks no MCU platform and continues without a version. */
 GError *
 goodix_htsec_check_firmware (const char *firmware)
@@ -92,10 +130,10 @@ const GoodixFamily goodix_family_htsec = {
     .ec_on_payload = { 0x01, 0x01, 0x00 },
     .command_budget = goodix_htsec_command_budget,
     .ack_timeout_waits_for_data = FALSE,
-    .ack_reports_config_loss = FALSE,
-    .d0_requests_reconnect = FALSE,
-    .replies_match_command = FALSE,
-    .provisionable = TRUE,
+    .event = goodix_htsec_event,
+    .reply_answers = goodix_htsec_reply_answers,
+    .download_succeeded = goodix_htsec_download_succeeded,
+    .may_send = goodix_htsec_may_send,
   },
   .channel = {
     .name = "GTLS",
