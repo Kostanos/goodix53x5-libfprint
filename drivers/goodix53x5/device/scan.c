@@ -327,7 +327,7 @@ goodix_scan_restart_before_arm (FpiSsm *ssm, FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
-  if (!self->gtls_restart_pending || !goodix_variant (self)->channel_restart_disarms)
+  if (!self->gtls_restart_pending || !goodix_family (self)->channel.restart_disarms)
     return FALSE;
   goodix_start_gtls_restart (dev, goodix_scan_restarted_before_arm, ssm);
   return TRUE;

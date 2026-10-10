@@ -141,7 +141,7 @@ static const FpIdEntry goodix53x5_id_table[] = {
   { .vid = 0x27c6, .pid = 0x5335, },
   { .vid = 0x27c6, .pid = 0x5385, },
   { .vid = 0x27c6, .pid = 0x5395, },
-  { .vid = 0x27c6, .pid = 0x533c, .driver_data = GOODIX_VARIANT_WRAPPED },
+  { .vid = 0x27c6, .pid = 0x533c, .driver_data = GOODIX_FAMILY_GM168SEC },
   { .vid = 0, .pid = 0, .driver_data = 0 },
 };
 

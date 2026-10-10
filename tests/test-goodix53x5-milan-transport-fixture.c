@@ -151,7 +151,7 @@ fixture_complete (GError *error)
 gboolean
 fixture_wrapped (FpDevice *dev)
 {
-  return goodix_variant (FPI_DEVICE_GOODIX53X5 (dev)) == &goodix_variant_wrapped;
+  return goodix_family (FPI_DEVICE_GOODIX53X5 (dev)) == &goodix_family_gm168sec;
 }
 
 /* Returns @message in one 0xa0 pack, zero-padded to whole 64-byte chunks,

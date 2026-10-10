@@ -74,7 +74,7 @@ void goodix_cmd_mcu_send (FpiSsm *ssm, FpDevice *dev, guint32 data_type,
 /* Post-MCU-ACK GTLS wait; consume the bounded stream after its receive signal. */
 void goodix_recv_mcu (FpiSsm *ssm, FpDevice *dev, guint timeout, gsize length);
 
-/* Returns the PSK hash answering GoodixVariant.read_psk_hash, or FALSE when
+/* Returns the PSK hash answering GoodixFamily.read_psk_hash, or FALSE when
  * the reply is not from that slot. */
 gboolean goodix_cmd_parse_psk_hash_reply (FpDevice      *dev,
                                           const guint8 **out_hash,

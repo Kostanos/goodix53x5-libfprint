@@ -52,9 +52,9 @@ write_contract_case (const Scenario *scenario)
 void
 check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
 {
-  const GoodixVariant *variant = goodix_variant (FPI_DEVICE_GOODIX53X5 (transfer->device));
+  const GoodixFamily *family = goodix_family (FPI_DEVICE_GOODIX53X5 (transfer->device));
 
-  if (transfer->endpoint == variant->ep_in)
+  if (transfer->endpoint == family->link.ep_in)
     {
       g_assert_cmpuint (transfer->length, ==, 0x8000);
       g_assert_cmpuint (timeout, ==, 0);
@@ -64,7 +64,7 @@ check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
   else
     {
       GBytes **first = NULL;
-      g_assert_cmpuint (transfer->endpoint, ==, variant->ep_out);
+      g_assert_cmpuint (transfer->endpoint, ==, family->link.ep_out);
       if (write_contract_case (io.scenario) &&
           (timeout != 0 || cancel != FPI_DEVICE_GOODIX53X5 (transfer->device)->session_cancel))
         g_test_fail ();

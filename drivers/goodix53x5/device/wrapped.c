@@ -1,5 +1,5 @@
 /*
- * Goodix 53x5 driver for libfprint — the wrapped variant (27c6:533c)
+ * Goodix 53x5 driver for libfprint — the GM168SEC family (27c6:533c)
  * Copyright (C) 2026 goodix-fp-linux-dev contributors
  *
  * This library is free software; you can redistribute it and/or
@@ -381,15 +381,38 @@ goodix_tls_attempt_new (FpDevice *dev)
   return fpi_ssm_new (dev, goodix_tls_ssm_handler, GOODIX_TLS_NUM_STATES);
 }
 
-const GoodixVariant goodix_variant_wrapped = {
-  .channel_name = "TLS",
-  .usb_interface = 0,
-  .ep_in = 0x03 | FPI_USB_ENDPOINT_IN,
-  .ep_out = 0x01 | FPI_USB_ENDPOINT_OUT,
-  /* McuSetEcCtrl builds [enable, mode, enable]; Dell's 533c driver turns
-   * isolation on with mode 0 when a session starts. */
-  .ec_on_payload = { 0x01, 0x00, 0x01 },
-  .wake_payload_len = 4,
+const GoodixFamily goodix_family_gm168sec = {
+  .link = {
+    .usb_interface = 0,
+    .ep_in = 0x03 | FPI_USB_ENDPOINT_IN,
+    .ep_out = 0x01 | FPI_USB_ENDPOINT_OUT,
+    .frame = goodix_frame_wrapped,
+    .frame_record = goodix_frame_tls_record,
+    .receive = goodix_receive_wrapped,
+  },
+  .protocol = {
+    .wake_payload_len = 4,
+    /* McuSetEcCtrl builds [enable, mode, enable]; Dell's 533c driver turns
+     * isolation on with mode 0 when a session starts. */
+    .ec_on_payload = { 0x01, 0x00, 0x01 },
+    .command_budget = goodix_wrapped_command_budget,
+    .ack_timeout_waits_for_data = TRUE,
+    .ack_reports_config_loss = TRUE,
+    .d0_requests_reconnect = TRUE,
+    .replies_match_command = TRUE,
+    /* 533c returns no firmware in APP mode, so nothing could restore it. */
+    .provisionable = FALSE,
+  },
+  .channel = {
+    .name = "TLS",
+    /* Start makes one TLS call and one retry; StartTlsThread, after a failed
+     * read, makes one; LogicEvtTlsConn makes at most two. */
+    .attempts = { .open = 2, .after_failed_read = 1, .reconnect = 2 },
+    .attempt_new = goodix_tls_attempt_new,
+    .decrypt_frame = goodix_decrypt_frame_tls,
+    .restart_on_first_image_error = TRUE,
+    .restart_disarms = TRUE,
+  },
   /* SelfCheck reads, then wakes and reads once more. */
   .firmware_reads = 2,
   .firmware_required = TRUE,
@@ -397,22 +420,5 @@ const GoodixVariant goodix_variant_wrapped = {
   .psk_checked_before_reset = TRUE,
   .initial_reset_requests_irq = TRUE,
   .psk_hash_type = GOODIX_WRAPPED_PSK_HASH_TYPE,
-  /* 533c returns no firmware in APP mode, so nothing could restore it. */
-  .provisionable = FALSE,
-  .ack_timeout_waits_for_data = TRUE,
-  .restart_on_first_image_error = TRUE,
-  .ack_reports_config_loss = TRUE,
-  .replies_match_command = TRUE,
-  .channel_restart_disarms = TRUE,
-  /* Start makes one TLS call and one retry; StartTlsThread, after a failed
-   * read, makes one; LogicEvtTlsConn makes at most two. */
-  .channel_attempts = { .open = 2, .after_failed_read = 1, .reconnect = 2 },
-  .d0_requests_reconnect = TRUE,
-  .command_budget = goodix_wrapped_command_budget,
   .read_psk_hash = goodix_read_psk_hash_wrapped,
-  .new_channel_attempt = goodix_tls_attempt_new,
-  .frame = goodix_frame_wrapped,
-  .frame_record = goodix_frame_tls_record,
-  .receive = goodix_receive_wrapped,
-  .decrypt_frame = goodix_decrypt_frame_tls,
 };

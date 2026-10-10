@@ -184,7 +184,7 @@ goodix_cmd_set_policy (GoodixTransport *operation)
   guint8 command = GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command);
   const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
 
-  goodix_variant (FPI_DEVICE_GOODIX53X5 (operation->dev))->command_budget (
+  goodix_family (FPI_DEVICE_GOODIX53X5 (operation->dev))->protocol.command_budget (
     command, &operation->ack_timeout_ms, &operation->response_timeout_ms);
   operation->response_slot = policy && operation->expect_data ?
                              policy->response_slot : GOODIX_RESPONSE_NONE;
@@ -300,7 +300,7 @@ goodix_cmd_writes_sensor (const GoodixCmd *cmd)
 static gboolean
 goodix_cmd_refused (FpiDeviceGoodix53x5 *self, const GoodixCmd *cmd)
 {
-  return !goodix_variant (self)->provisionable && goodix_cmd_writes_sensor (cmd);
+  return !goodix_family (self)->protocol.provisionable && goodix_cmd_writes_sensor (cmd);
 }
 
 /* Appends @payload to the category-D stream and signals its waiter. */
@@ -461,14 +461,14 @@ goodix_transport_send (GoodixTransport *operation)
 
   if (operation->record)
     {
-      chunked = goodix_variant (self)->frame_record (operation->record, &padded_len);
+      chunked = goodix_family (self)->link.frame_record (operation->record, &padded_len);
     }
   else
     {
       msg = goodix_proto_build_message (cmd->category, cmd->command,
                                         cmd->payload, cmd->payload_len,
                                         cmd->use_checksum, &msg_len);
-      chunked = goodix_variant (self)->frame (msg, msg_len, &padded_len);
+      chunked = goodix_family (self)->link.frame (msg, msg_len, &padded_len);
       g_free (msg);
     }
   if (!chunked)
@@ -479,7 +479,7 @@ goodix_transport_send (GoodixTransport *operation)
     }
 
   transfer = fpi_usb_transfer_new (dev);
-  fpi_usb_transfer_fill_bulk_full (transfer, goodix_variant (self)->ep_out,
+  fpi_usb_transfer_fill_bulk_full (transfer, goodix_family (self)->link.ep_out,
                                    chunked, padded_len, g_free);
   /* Native writes have no timeout. The selected action or hardware-service
    * owner supplies cancellation until this callback joins; Linux USB removal
@@ -521,7 +521,7 @@ goodix_transport_expired (FpDevice *dev, gpointer data)
 
   operation->timer = NULL;
   if (operation->phase == GOODIX_TRANSPORT_ACK && operation->expect_data &&
-      goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->ack_timeout_waits_for_data)
+      goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.ack_timeout_waits_for_data)
     {
       g_autofree gchar *what = goodix_transport_describe (operation);
 
@@ -689,7 +689,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
                           (operation->phase == GOODIX_TRANSPORT_ACK ||
                            operation->phase == GOODIX_TRANSPORT_RESPONSE);
   gboolean config_failed = !error && operation->expect_data &&
-                           goodix_variant (self)->ack_reports_config_loss &&
+                           goodix_family (self)->protocol.ack_reports_config_loss &&
                            goodix_cmd_is_config_download (&operation->cmd) &&
                            self->config_response_status != 1;
 
@@ -770,7 +770,7 @@ goodix_transport_ack (GoodixTransport *operation)
 }
 
 /* Checks whether a reply for @slot answers another command than the one in
- * flight, on a variant whose replies_match_command is set. A stale firmware
+ * flight, on a family whose replies_match_command is set. A stale firmware
  * reply must not complete a reset that shares its slot. */
 static gboolean
 goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
@@ -778,7 +778,7 @@ goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
 {
   GoodixTransport *operation = self->transport;
 
-  return goodix_variant (self)->replies_match_command && operation && !operation->record &&
+  return goodix_family (self)->protocol.replies_match_command && operation && !operation->record &&
          (operation->phase == GOODIX_TRANSPORT_SEND || operation->phase == GOODIX_TRANSPORT_ACK ||
           operation->phase == GOODIX_TRANSPORT_RESPONSE) &&
          (goodix_response_slot_is_shared (slot) ||
@@ -791,7 +791,7 @@ goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
 static void
 goodix_request_reconnect (FpiDeviceGoodix53x5 *self)
 {
-  fp_info ("Sensor requested a new %s session", goodix_variant (self)->channel_name);
+  fp_info ("Sensor requested a new %s session", goodix_family (self)->channel.name);
   self->reconnect_requested = TRUE;
   if (!self->gtls_restart_active)
     self->gtls_restart_pending = TRUE;
@@ -865,7 +865,7 @@ goodix_rx_cell (GoodixTransport *operation,
                                               self->transport->cmd.command))
         self->transport->ack_status = payload[1];
       if (ack_packet && (payload[1] & GOODIX_PROTO_ACK_FLAG_CONFIG_LOST) &&
-          goodix_variant (self)->ack_reports_config_loss)
+          goodix_family (self)->protocol.ack_reports_config_loss)
         {
           if (!self->config_lost)
             fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
@@ -921,7 +921,7 @@ goodix_rx_cell (GoodixTransport *operation,
               return;
             }
           if (category == GOODIX_PROTO_CATEGORY_MCU && command == 0 &&
-              goodix_variant (self)->d0_requests_reconnect)
+              goodix_family (self)->protocol.d0_requests_reconnect)
             {
               goodix_request_reconnect (self);
               goodix_proto_rx_reset (&self->rx);
@@ -973,7 +973,7 @@ goodix_rx_cell (GoodixTransport *operation,
           if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == 2)
             self->config_response_status = payload[0];
           if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD &&
-              goodix_variant (self)->ack_reports_config_loss)
+              goodix_family (self)->protocol.ack_reports_config_loss)
             self->config_response_status = payload_len ? payload[0] : 0;
 
           /* DataFromDevice publishes these shared stores without a matching
@@ -1129,12 +1129,12 @@ receive_more:
 }
 
 /* Requests a secure-channel restart at every second undecodable frame, or
- * at every one where the variant restarts on the first. Successful frames
+ * at every one where the family restarts on the first. Successful frames
  * do not clear the history, and an error during a restart still consumes it. */
 static void
 goodix_count_image_error (FpiDeviceGoodix53x5 *self)
 {
-  if (!goodix_variant (self)->restart_on_first_image_error &&
+  if (!goodix_family (self)->channel.restart_on_first_image_error &&
       !self->image_error_history)
     {
       self->image_error_history = TRUE;
@@ -1162,7 +1162,7 @@ goodix_rx_image (GoodixTransport *operation, const guint8 *payload, gsize len)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (operation->dev);
   g_autofree guint8 *decoded = NULL;
   gsize decoded_len = 0;
-  GoodixFrameStatus status = goodix_variant (self)->decrypt_frame (
+  GoodixFrameStatus status = goodix_family (self)->channel.decrypt_frame (
     self, payload, len, &decoded, &decoded_len);
   guint16 *frame = status == GOODIX_FRAME_DECRYPTED ?
                    goodix_device_decode_image (decoded, decoded_len) : NULL;
@@ -1239,38 +1239,44 @@ goodix_direct_self_check (const char *firmware)
 static void
 goodix_read_psk_hash_direct (FpiSsm *ssm, FpDevice *dev)
 {
-  goodix_cmd_production_read (ssm, dev, goodix_variant_direct.psk_hash_type);
+  goodix_cmd_production_read (ssm, dev, goodix_family_htsec.psk_hash_type);
 }
 
-const GoodixVariant goodix_variant_direct = {
-  .channel_name = "GTLS",
-  .usb_interface = 1,
-  .ep_in = GOODIX_EP_IN,
-  .ep_out = GOODIX_EP_OUT,
-  .ec_on_payload = { 0x01, 0x01, 0x00 },
-  .wake_payload_len = 2,
+const GoodixFamily goodix_family_htsec = {
+  .link = {
+    .usb_interface = 1,
+    .ep_in = GOODIX_EP_IN,
+    .ep_out = GOODIX_EP_OUT,
+    .frame = goodix_frame_direct,
+    .frame_record = NULL,
+    .receive = goodix_receive_direct,
+  },
+  .protocol = {
+    .wake_payload_len = 2,
+    .ec_on_payload = { 0x01, 0x01, 0x00 },
+    .command_budget = goodix_direct_command_budget,
+    .ack_timeout_waits_for_data = FALSE,
+    .ack_reports_config_loss = FALSE,
+    .d0_requests_reconnect = FALSE,
+    .replies_match_command = FALSE,
+    .provisionable = TRUE,
+  },
+  .channel = {
+    .name = "GTLS",
+    /* deviceInit runs the three-attempt wrapper twice; the event restart once. */
+    .attempts = { .open = 6, .after_failed_read = 3, .reconnect = 3 },
+    .attempt_new = goodix_gtls_attempt_new,
+    .decrypt_frame = goodix_decrypt_frame_gtls,
+    .restart_on_first_image_error = FALSE,
+    .restart_disarms = FALSE,
+  },
   .firmware_reads = 5,
   .firmware_required = FALSE,
   .self_check = goodix_direct_self_check,
   .psk_checked_before_reset = FALSE,
   .initial_reset_requests_irq = FALSE,
   .psk_hash_type = 0xB003,
-  .provisionable = TRUE,
-  .ack_timeout_waits_for_data = FALSE,
-  .restart_on_first_image_error = FALSE,
-  .ack_reports_config_loss = FALSE,
-  .replies_match_command = FALSE,
-  .channel_restart_disarms = FALSE,
-  /* deviceInit runs the three-attempt wrapper twice; the event restart once. */
-  .channel_attempts = { .open = 6, .after_failed_read = 3, .reconnect = 3 },
-  .d0_requests_reconnect = FALSE,
-  .command_budget = goodix_direct_command_budget,
   .read_psk_hash = goodix_read_psk_hash_direct,
-  .new_channel_attempt = goodix_gtls_attempt_new,
-  .frame = goodix_frame_direct,
-  .frame_record = NULL,
-  .receive = goodix_receive_direct,
-  .decrypt_frame = goodix_decrypt_frame_gtls,
 };
 
 /* Drops the partial wrapped pack kept for the next transfer, if any. */
@@ -1317,7 +1323,7 @@ goodix_reader_start (FpDevice *dev)
     return;
   reader->pending = TRUE;
   transfer = fpi_usb_transfer_new (dev);
-  fpi_usb_transfer_fill_bulk (transfer, goodix_variant (self)->ep_in,
+  fpi_usb_transfer_fill_bulk (transfer, goodix_family (self)->link.ep_in,
                               GOODIX_USB_READ_SIZE);
   fpi_usb_transfer_submit (transfer, 0, reader->cancel, goodix_rx_cb, reader);
 }
@@ -1359,8 +1365,8 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
     }
 
   operation->processing_cells = TRUE;
-  goodix_variant (self)->receive (self, operation, transfer->buffer,
-                                  transfer->actual_length);
+  goodix_family (self)->link.receive (self, operation, transfer->buffer,
+                                     transfer->actual_length);
   operation->processing_cells = FALSE;
   self->rx_idle_partial = self->rx.len && !goodix_proto_rx_complete (&self->rx);
 
@@ -1557,7 +1563,7 @@ goodix_transport_send_record (FpDevice           *dev,
 
   if (goodix_transport_reject_busy (dev, done, data))
     return;
-  if (!goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->frame_record)
+  if (!goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->link.frame_record)
     {
       GoodixTransportResult result = {0};
       done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,

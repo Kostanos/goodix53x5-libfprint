@@ -22,7 +22,7 @@
 #include "driver-private.h"
 
 /* Command bytes are copied when the request is accepted. */
-typedef struct
+typedef struct _GoodixCmd
 {
   guint8   category;
   guint8   command;
@@ -66,7 +66,7 @@ void goodix_transport_command (FpDevice *dev, const GoodixTransportRequest *requ
 void goodix_transport_send_record (FpDevice *dev, GBytes *record,
                                    GoodixTransportDone done, gpointer data);
 
-/* Entry points of the receiver for GoodixVariant.receive: protocol messages
+/* Entry points of the receiver for GoodixLink.receive: protocol messages
  * go in as direct-framing cells, encrypted images and category-D data whole. */
 void goodix_rx_cell (GoodixTransport *operation, const guint8 *buffer,
                      gsize cell_length);

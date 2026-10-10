@@ -227,7 +227,7 @@ goodix_cmd_probe (FpiSsm *ssm, FpDevice *dev, gboolean firmware,
                   GoodixCmdResultCallback callback)
 {
   guint8 payload[4] = { 0 };
-  gsize len = firmware ? 2 : goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->wake_payload_len;
+  gsize len = firmware ? 2 : goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.wake_payload_len;
 
   goodix_run_cmd_result (ssm, dev, firmware ? 0x0a : 0, firmware ? 4 : 0,
                          payload, len, firmware, callback);
@@ -687,7 +687,7 @@ goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on)
   guint8 payload_on[3];
   guint8 payload_off[3] = { 0x00, 0x00, 0x00 };
 
-  memcpy (payload_on, goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->ec_on_payload,
+  memcpy (payload_on, goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.ec_on_payload,
           sizeof (payload_on));
   if (on)
     goodix_run_cmd (ssm, dev, 0xA, 0x7, payload_on, 3, FALSE);
@@ -761,7 +761,7 @@ goodix_cmd_parse_psk_hash_reply (FpDevice      *dev,
                                  gsize         *out_hash_len)
 {
   return goodix_cmd_parse_production_read_reply (
-    dev, goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->psk_hash_type,
+    dev, goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->psk_hash_type,
     out_hash, out_hash_len);
 }
 

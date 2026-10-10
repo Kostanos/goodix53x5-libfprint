@@ -9,9 +9,9 @@
 static FpDevice *
 wrapped_device_new (void)
 {
-  FpDevice *dev = fixture_device_new_variant (GOODIX_VARIANT_WRAPPED);
+  FpDevice *dev = fixture_device_new_variant (GOODIX_FAMILY_GM168SEC);
 
-  g_assert_true (goodix_variant (FPI_DEVICE_GOODIX53X5 (dev)) == &goodix_variant_wrapped);
+  g_assert_true (goodix_family (FPI_DEVICE_GOODIX53X5 (dev)) == &goodix_family_gm168sec);
   return dev;
 }
 
@@ -569,7 +569,7 @@ run_wrapped (FpDevice *dev, FpiSsm *ssm, const WrappedOpen *sensor, GError **err
     {
       if (!self->transport)
         g_main_context_iteration (NULL, TRUE);
-      else if (usb.pending->endpoint == goodix_variant_wrapped.ep_out)
+      else if (usb.pending->endpoint == goodix_family_gm168sec.link.ep_out)
         {
           /* The message's LE16 length counts its payload and checksum. */
           g_string_append_printf (startup_trace, "(%u:%02x),", usb.pending->buffer[5] - 1,
