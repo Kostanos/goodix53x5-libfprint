@@ -28,10 +28,6 @@
 
 #include <string.h>
 
-#define GOODIX_PROTO_CATEGORY_FDT 0x03
-#define GOODIX_PROTO_CMD_FDT_DOWN 0x01
-#define GOODIX_PROTO_CMD_FDT_UP 0x02
-#define GOODIX_PROTO_CMD_FDT_MANUAL 0x03
 #define GOODIX_PROTO_CMD_IMAGE 0x00
 
 #define GOODIX_FDT_IRQ_DOWN 0x0002
@@ -353,7 +349,8 @@ void
 goodix_cmd_upload_config (FpiSsm *ssm, FpDevice *dev,
                           const guint8 *config, gsize config_len)
 {
-  goodix_run_cmd (ssm, dev, 0x9, 0x0, config, config_len, TRUE);
+  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_CONFIG, GOODIX_PROTO_CMD_CONFIG_DOWNLOAD,
+                  config, config_len, TRUE);
 }
 
 void
@@ -366,7 +363,8 @@ goodix_cmd_restore_config (FpiSsm *ssm, FpDevice *dev,
   g_autofree guint8 *payload = g_memdup2 (config, length);
 
   goodix_device_patch_config (payload, length, &self->calib);
-  goodix_run_cmd_result (ssm, dev, 9, 0, payload, length, TRUE, callback);
+  goodix_run_cmd_result (ssm, dev, GOODIX_PROTO_CATEGORY_CONFIG,
+                         GOODIX_PROTO_CMD_CONFIG_DOWNLOAD, payload, length, TRUE, callback);
 }
 
 typedef enum {
@@ -439,7 +437,9 @@ goodix_arm_handler (FpiSsm *ssm, FpDevice *dev)
       const guint8 *config = goodix_device_get_default_config (&payload_len);
       payload = g_memdup2 (config, payload_len);
       goodix_device_patch_config (payload, payload_len, &self->calib);
-      goodix_run_cmd_result (ssm, dev, 9, 0, payload, payload_len, TRUE, goodix_arm_result);
+      goodix_run_cmd_result (ssm, dev, GOODIX_PROTO_CATEGORY_CONFIG,
+                             GOODIX_PROTO_CMD_CONFIG_DOWNLOAD, payload, payload_len, TRUE,
+                             goodix_arm_result);
     }
   else
     {

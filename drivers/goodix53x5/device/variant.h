@@ -29,6 +29,18 @@ typedef enum
   GOODIX_FRAME_INVALID,
 } GoodixFrameStatus;
 
+/* Handshake attempts before a secure-channel start gives up, by what
+ * started it. */
+typedef struct
+{
+  /* Open and resume. */
+  guint open;
+  /* A restart after an image read the channel rejected. */
+  guint after_failed_read;
+  /* A new session the sensor asked for. */
+  guint reconnect;
+} GoodixChannelAttempts;
+
 /* The one place the sensor families this driver runs differ: same chip and
  * pipeline, but their own USB framing and secure channel. The transport and
  * session ask the device's variant rather than branch on its USB id. */
@@ -68,12 +80,7 @@ typedef struct
   /* TRUE where starting a new secure-channel session drops the
    * finger-detect arm, so a restart still pending runs before an arm. */
   gboolean    channel_restart_disarms;
-  /* Handshake attempts open and resume make before failing. */
-  guint       channel_attempts;
-  /* Handshake attempts a restart after a failed image read makes. */
-  guint       channel_restart_attempts;
-  /* Handshake attempts a reconnect the sensor asked for makes. */
-  guint       channel_reconnect_attempts;
+  GoodixChannelAttempts channel_attempts;
   /* TRUE where a D0 message from the sensor asks for a new secure-channel
    * session rather than carrying channel bytes. */
   gboolean    d0_requests_reconnect;

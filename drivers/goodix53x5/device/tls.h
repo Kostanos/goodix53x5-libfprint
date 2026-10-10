@@ -12,6 +12,9 @@
 
 #include <glib.h>
 
+/* A TLS record's header: content type, version, and its big-endian length. */
+#define GOODIX_TLS_RECORD_HEADER 5
+
 /* The host (server) end of a wrapped sensor's TLS 1.2-PSK session: the one
  * place its records are produced and authenticated; transport only moves them. */
 typedef struct _GoodixTls GoodixTls;

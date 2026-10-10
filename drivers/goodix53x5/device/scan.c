@@ -88,8 +88,8 @@ typedef struct
   gboolean                       cpu_outstanding;
   gboolean                       refresh_deferred;
   gboolean                       cycle_active;
-  /* A download for the configuration the sensor reported lost failed; the
-   * next one waits for the next finger event rather than looping. */
+  /* Set once a download of the configuration the sensor reported lost ran
+   * since the last finger event, so a failed one is not retried in a loop. */
   gboolean                       lost_config_tried;
   gboolean                       recovering_generation;
   gboolean                       release_settled;
@@ -318,10 +318,10 @@ goodix_scan_restarted_before_arm (FpDevice *dev, GError *error, gpointer user_da
     fpi_ssm_jump_to_state (ssm, fpi_ssm_get_cur_state (ssm));
 }
 
-/* Runs a channel restart still pending, then enters the current arming state
- * again, on a variant whose restart drops the arm; returns TRUE if it did.
- * The vendor restarts as soon as a read fails, so the arm of the capture's
- * failure path, which comes later, lands on the new session. */
+/* Returns TRUE after starting the pending channel restart, on a variant whose
+ * restart drops the finger-detect arm; @ssm re-enters its arming state when
+ * the restart ends, or fails with its error. The vendor restarts at the
+ * failed read, so the capture-failure arm lands on the new session. */
 static gboolean
 goodix_scan_restart_before_arm (FpiSsm *ssm, FpDevice *dev)
 {
@@ -419,8 +419,9 @@ goodix_scan_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
   fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REARM_DOWN);
 }
 
-/* The vendor's power-lost handler downloads the configuration and arms
- * nothing, so the scan goes back to waiting. */
+/* Returns the scan to waiting once a download of the lost configuration
+ * ends, arming nothing, as the vendor's power-lost handler does. Fails the
+ * scan on an error other than an ordinary command failure. */
 static void
 goodix_scan_lost_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
                                   gboolean native_zero, GError *error)

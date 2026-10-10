@@ -455,6 +455,19 @@ typedef struct
   gboolean    unacked_firmware;
 } WrappedOpen;
 
+/* The firmware this laptop's sensor shipped with. */
+#define STOCK_FIRMWARE "GF5288_GM168SEC_APP_13016"
+
+/* A 533c as shipped: stock firmware, the all-zero PSK, every ACK sent. */
+static const WrappedOpen stock_sensor = { .firmware = STOCK_FIRMWARE };
+
+/* Returns the error a wait that ran out of time completes with. */
+static GError *
+timed_out (const char *why)
+{
+  return g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT, why);
+}
+
 /* Answers the read pending for io.command: its ACK first, then its reply. */
 static void
 wrapped_open_answer (const WrappedOpen *sensor, gboolean *acked, guint *firmware_reads)
@@ -472,15 +485,13 @@ wrapped_open_answer (const WrappedOpen *sensor, gboolean *acked, guint *firmware
   if (io.command == 0xa8 && *firmware_reads < sensor->silent_firmware_reads)
     {
       (*firmware_reads)++;
-      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
-                                             "Silent firmware read"));
+      fixture_complete (timed_out ("Silent firmware read"));
       return;
     }
   if (!*acked && io.command == 0xa8 && sensor->unacked_firmware)
     {
       *acked = TRUE;
-      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
-                                             "No ACK"));
+      fixture_complete (timed_out ("No ACK"));
       return;
     }
   if (!*acked)
@@ -491,8 +502,7 @@ wrapped_open_answer (const WrappedOpen *sensor, gboolean *acked, guint *firmware
   else if (io.command == 0xd0)
     {
       /* No ClientHello: the handshake attempt ends on its reply wait. */
-      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
-                                             "No ClientHello"));
+      fixture_complete (timed_out ("No ClientHello"));
       return;
     }
   else if (io.command == 0xa8)
@@ -595,9 +605,8 @@ run_wrapped_open (const WrappedOpen *sensor, GError **error)
 static void
 test_wrapped_open_order (void)
 {
-  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
   g_autoptr(GError) error = NULL;
-  g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
+  g_autofree gchar *trace = run_wrapped_open (&stock_sensor, &error);
 
   g_assert_no_error (error);
   g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),e4,(16:20),a2,(2:05),82,(5:00),");
@@ -608,7 +617,7 @@ test_wrapped_open_order (void)
 static void
 test_wrapped_open_unacked_reply (void)
 {
-  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016",
+  const WrappedOpen sensor = { .firmware = STOCK_FIRMWARE,
                                .unacked_firmware = TRUE };
   g_autoptr(GError) error = NULL;
   g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
@@ -629,27 +638,35 @@ test_wrapped_open_foreign_firmware (void)
   g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),");
 }
 
+/* Completes the pending write of the command with wire byte @command, and
+ * ACKs it. */
+static void
+ack_write (guint8 command)
+{
+  fixture_complete (NULL);
+  ack_reply (usb.pending, command);
+  fixture_complete (NULL);
+}
+
 static void
 reset_handler (FpiSsm *ssm, FpDevice *dev)
 {
   goodix_cmd_reset_sensor (ssm, dev, TRUE, NULL);
 }
 
-/* Returns how many times a reset that asked for its IRQ reply completed on
- * @dev once its ACK and then a stale firmware-version reply arrived, which
- * shares its response slot; then answers it properly. */
+/* Returns how many times a reset that asks for its IRQ reply completed on
+ * @dev after its ACK and a stale firmware-version reply, which shares its
+ * response slot. */
 static guint
 reset_completions_after_stale_reply (FpDevice *dev)
 {
-  static const char firmware[] = "GF5288_GM168SEC_APP_13016";
+  static const char firmware[] = STOCK_FIRMWARE;
   static const guint8 irq[4] = { 0 };
   guint early;
 
   command_session_begin (dev);
   fpi_ssm_start (fpi_ssm_new (dev, reset_handler, 1), startup_done);
-  fixture_complete (NULL);
-  ack_reply (usb.pending, 0xa2);
-  fixture_complete (NULL);
+  ack_write (0xa2);
   reply (usb.pending, 0xa, 4, (const guint8 *) firmware, sizeof (firmware));
   fixture_complete (NULL);
   early = io.completions;
@@ -682,7 +699,7 @@ test_wrapped_reply_matches_command (void)
 static void
 test_wrapped_self_check_parse (void)
 {
-  g_assert_true (goodix_wrapped_self_check ("GF5288_GM168SEC_APP_13016"));
+  g_assert_true (goodix_wrapped_self_check (STOCK_FIRMWARE));
   g_assert_true (goodix_wrapped_self_check ("GF5288_GM168_APP_13016"));
   g_assert_false (goodix_wrapped_self_check ("GF5288_GM168SEC_APP"));
   g_assert_false (goodix_wrapped_self_check ("GF5288_GM168SEC"));
@@ -694,7 +711,7 @@ test_wrapped_self_check_parse (void)
 static void
 test_wrapped_open_unreadable_firmware (void)
 {
-  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016",
+  const WrappedOpen sensor = { .firmware = STOCK_FIRMWARE,
                                .silent_firmware_reads = G_MAXUINT };
   g_autoptr(GError) error = NULL;
   g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
@@ -708,7 +725,7 @@ test_wrapped_open_unreadable_firmware (void)
 static void
 test_wrapped_open_foreign_psk (void)
 {
-  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016",
+  const WrappedOpen sensor = { .firmware = STOCK_FIRMWARE,
                                .foreign_psk = TRUE };
   g_autoptr(GError) error = NULL;
   g_autofree gchar *trace = run_wrapped_open (&sensor, &error);
@@ -826,9 +843,7 @@ config_lost_after_download (gboolean answered)
   command_session_begin (dev);
   self->config_lost = TRUE;
   fpi_ssm_start (fpi_ssm_new (dev, upload_config_handler, 1), startup_done);
-  fixture_complete (NULL);
-  ack_reply (usb.pending, 0x90);
-  fixture_complete (NULL);
+  ack_write (0x90);
   if (answered)
     {
       reply (usb.pending, 0x9, 0, config_reply, sizeof (config_reply));
@@ -837,13 +852,9 @@ config_lost_after_download (gboolean answered)
   else
     {
       /* The download is sent once more after its first wait runs out. */
-      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
-                                             "No reply"));
-      fixture_complete (NULL);
-      ack_reply (usb.pending, 0x90);
-      fixture_complete (NULL);
-      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
-                                             "No reply"));
+      fixture_complete (timed_out ("No reply"));
+      ack_write (0x90);
+      fixture_complete (timed_out ("No reply"));
     }
   g_assert_cmpuint (io.completions, ==, 1);
   g_clear_error (&io.error);
@@ -916,8 +927,7 @@ test_wrapped_lost_config_restore_arms_nothing (void)
                                "Restoring the lost configuration failed*");
       goodix_scan_lost_config_restored (
         data.ssm, dev, 0, TRUE,
-        failed ? g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
-                                      "No reply") : NULL);
+        failed ? timed_out ("No reply") : NULL);
       g_test_assert_expected_messages ();
       g_assert_cmpint (scan_state, ==, GOODIX_SCAN_COORD_WAIT_EVENT);
       g_assert_false (data.dispatching);
@@ -1052,14 +1062,13 @@ tls_attempt_trace (const WrappedOpen *sensor, gboolean power_lost, GError **erro
 static void
 test_wrapped_power_loss_refreshes_psk (void)
 {
-  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
-  const WrappedOpen foreign = { .firmware = "GF5288_GM168SEC_APP_13016",
+  const WrappedOpen foreign = { .firmware = STOCK_FIRMWARE,
                                 .foreign_psk = TRUE };
   g_autoptr(GError) refreshed_error = NULL;
   g_autoptr(GError) plain_error = NULL;
   g_autoptr(GError) foreign_error = NULL;
-  g_autofree gchar *refreshed = tls_attempt_trace (&sensor, TRUE, &refreshed_error);
-  g_autofree gchar *plain = tls_attempt_trace (&sensor, FALSE, &plain_error);
+  g_autofree gchar *refreshed = tls_attempt_trace (&stock_sensor, TRUE, &refreshed_error);
+  g_autofree gchar *plain = tls_attempt_trace (&stock_sensor, FALSE, &plain_error);
   g_autofree gchar *refused = tls_attempt_trace (&foreign, TRUE, &foreign_error);
 
   /* The simulated sensor sends no ClientHello, so each attempt ends there. */
@@ -1094,14 +1103,13 @@ test_wrapped_psk_refresh_survives_suspend (void)
 static guint
 tls_requests (gboolean restart, gboolean reconnect)
 {
-  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
   g_autoptr(FpDevice) dev = wrapped_device_new ();
   g_autoptr(GError) error = NULL;
   g_autofree gchar *trace = NULL;
   guint requests = 0;
 
   FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested = reconnect;
-  trace = run_wrapped (dev, restart ? NULL : goodix_gtls_retry_new (dev), &sensor, &error);
+  trace = run_wrapped (dev, restart ? NULL : goodix_gtls_open_retry_new (dev), &stock_sensor, &error);
   for (const char *p = trace; (p = strstr (p, "d0,")); p++)
     requests++;
   return requests;
@@ -1132,13 +1140,12 @@ arm_after_restart_handler (FpiSsm *ssm, FpDevice *dev)
 static gchar *
 arm_trace (gboolean restart_pending)
 {
-  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
   g_autoptr(FpDevice) dev = wrapped_device_new ();
   g_autoptr(GError) error = NULL;
   gchar *trace;
 
   FPI_DEVICE_GOODIX53X5 (dev)->gtls_restart_pending = restart_pending;
-  trace = run_wrapped (dev, fpi_ssm_new (dev, arm_after_restart_handler, 1), &sensor, &error);
+  trace = run_wrapped (dev, fpi_ssm_new (dev, arm_after_restart_handler, 1), &stock_sensor, &error);
   g_assert_no_error (error);
   return trace;
 }

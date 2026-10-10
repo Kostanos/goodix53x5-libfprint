@@ -36,7 +36,8 @@
 #define GOODIX_PACK_TLS_DATA_HDR   9
 /* The largest TLS record RFC 5246 allows (2^14 + 2048 bytes and its 5-byte
  * header) behind the prefix; a longer pack is a misread header. */
-#define GOODIX_PACK_MAX_PAYLOAD    (GOODIX_PACK_TLS_DATA_HDR + 5 + 16384 + 2048)
+#define GOODIX_PACK_MAX_PAYLOAD    (GOODIX_PACK_TLS_DATA_HDR + GOODIX_TLS_RECORD_HEADER + \
+                                    16384 + 2048)
 
 /* FpParseImage takes exactly the raw12 pixels and their CRC. */
 #define GOODIX_WRAPPED_IMAGE_LEN (GOODIX_SENSOR_RAW12_BYTES + 4)
@@ -223,10 +224,13 @@ static gboolean
 goodix_wrapped_self_check (const char *firmware)
 {
   g_auto(GStrv) fields = g_strsplit (firmware, "_", 4);
+  const char *platform;
 
-  return g_strv_length (fields) == 4 &&
-         (g_ascii_strcasecmp (fields[1], "GM168") == 0 ||
-          g_ascii_strcasecmp (fields[1], "GM168SEC") == 0);
+  if (g_strv_length (fields) != 4)
+    return FALSE;
+  platform = fields[1];
+  return g_ascii_strcasecmp (platform, "GM168") == 0 ||
+         g_ascii_strcasecmp (platform, "GM168SEC") == 0;
 }
 
 /* The vendor's MCU context waits 1500 ms for every ACK and every reply;
@@ -366,9 +370,7 @@ const GoodixVariant goodix_variant_wrapped = {
   .channel_restart_disarms = TRUE,
   /* Start makes one TLS call and one retry; StartTlsThread, after a failed
    * read, makes one; LogicEvtTlsConn makes at most two. */
-  .channel_attempts = 2,
-  .channel_restart_attempts = 1,
-  .channel_reconnect_attempts = 2,
+  .channel_attempts = { .open = 2, .after_failed_read = 1, .reconnect = 2 },
   .d0_requests_reconnect = TRUE,
   .command_budget = goodix_wrapped_command_budget,
   .read_psk_hash = goodix_read_psk_hash_wrapped,

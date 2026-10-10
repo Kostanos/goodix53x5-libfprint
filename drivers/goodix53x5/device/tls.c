@@ -167,16 +167,20 @@ goodix_tls_established (GoodixTls *tls)
   return SSL_is_init_finished (tls->ssl);
 }
 
-/* Checks whether @records is a run of whole TLS records, each its 5-byte
- * header and the length that header announces. OpenSSL would keep a cut
+/* Checks whether @records is a run of whole TLS records, each its header
+ * and the length that header announces. OpenSSL would keep a cut
  * record, even a bare header, for the next call and fail that one instead. */
 static gboolean
 goodix_tls_records_whole (const guint8 *records, gsize len)
 {
   gsize offset = 0;
 
-  while (offset + 5 <= len)
-    offset += 5 + (records[offset + 3] << 8 | records[offset + 4]);
+  while (offset + GOODIX_TLS_RECORD_HEADER <= len)
+    {
+      const guint8 *header = records + offset;
+
+      offset += GOODIX_TLS_RECORD_HEADER + (header[3] << 8 | header[4]);
+    }
   return offset == len;
 }
 

@@ -41,9 +41,6 @@
 #define GOODIX_PROTO_CMD_ACK          0x00
 #define GOODIX_PROTO_ACK_FLAG_VALID   0x01
 #define GOODIX_PROTO_ACK_FLAG_CONFIG_LOST 0x02
-#define GOODIX_PROTO_CATEGORY_FDT     0x03
-#define GOODIX_PROTO_CMD_FDT_DOWN     0x01
-#define GOODIX_PROTO_CMD_FDT_UP       0x02
 #define GOODIX_FDT_EVENT_PAYLOAD_LEN  (4 + GOODIX_FDT_BASE_LEN)
 #define GOODIX_PROTO_CMD_BYTE(category, command) \
   (((category) << 4) | ((command) << 1))
@@ -153,6 +150,15 @@ goodix_cmd_policy (guint8 command)
     if (command_policies[i].command == command)
       return &command_policies[i];
   return NULL;
+}
+
+/* Checks whether replies for @slot land in the shared response cache, which
+ * the awaited command reads as its own reply. */
+static gboolean
+goodix_response_slot_is_shared (GoodixResponseSlot slot)
+{
+  return slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
+         slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION;
 }
 
 static guint8
@@ -269,6 +275,14 @@ goodix_cmd_is_preset_read (const GoodixCmd *cmd)
          memcmp (cmd->payload + 12, zero, 4) == 0;
 }
 
+/* Checks whether @cmd downloads a sensor configuration. */
+static gboolean
+goodix_cmd_is_config_download (const GoodixCmd *cmd)
+{
+  return cmd->category == GOODIX_PROTO_CATEGORY_CONFIG &&
+         cmd->command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD;
+}
+
 /* Checks whether @cmd could change what the sensor stores: any production
  * command but a preset read (e0 and e2 writes, e4 used as a write), a
  * firmware write (f0) or an APP erase (a4). */
@@ -277,8 +291,8 @@ goodix_cmd_writes_sensor (const GoodixCmd *cmd)
 {
   if (cmd->category == GOODIX_PROTO_CATEGORY_PRODUCTION)
     return !goodix_cmd_is_preset_read (cmd);
-  return (cmd->category == 0xf && cmd->command == 0x0) ||
-         (cmd->category == 0xa && cmd->command == 0x2);
+  return (cmd->category == GOODIX_PROTO_CATEGORY_FIRMWARE && cmd->command == 0x0) ||
+         (cmd->category == GOODIX_PROTO_CATEGORY_SYSTEM && cmd->command == 0x2);
 }
 
 /* Checks whether @cmd would write to a sensor this driver never provisions,
@@ -374,8 +388,8 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
       return;
     }
   operation->deadline_us = g_get_monotonic_time () + operation->ack_timeout_ms * 1000LL;
-  if ((operation->cmd.category == 0 && operation->cmd.command == 0) ||
-      (operation->cmd.category == 0x0a && operation->cmd.command == 4))
+  if ((operation->cmd.category == GOODIX_PROTO_CATEGORY_NOP && operation->cmd.command == 0) ||
+      (operation->cmd.category == GOODIX_PROTO_CATEGORY_SYSTEM && operation->cmd.command == 4))
     operation->cancellable = g_object_ref (goodix_session_io_cancellable (dev));
   if (operation->ack_status & GOODIX_PROTO_ACK_FLAG_VALID)
     goodix_transport_ack (operation);
@@ -610,8 +624,7 @@ goodix_transport_select_response (GoodixTransport *operation)
   GoodixResponseSlot slot = operation->response_slot;
   gsize offset = 0, length;
 
-  if (slot != GOODIX_RESPONSE_SYSTEM && slot != GOODIX_RESPONSE_REGISTER &&
-      slot != GOODIX_RESPONSE_OTP && slot != GOODIX_RESPONSE_PRODUCTION)
+  if (!goodix_response_slot_is_shared (slot))
     return NULL;
   if (!(self->command_response_ready & goodix_response_bit (slot)))
     return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -689,8 +702,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
     }
 
   /* Only a download that completed restores a lost configuration. */
-  if (!error && operation->expect_data && operation->cmd.category == 9 &&
-      operation->cmd.command == 0)
+  if (!error && operation->expect_data && goodix_cmd_is_config_download (&operation->cmd))
     self->config_lost = FALSE;
   self->transport = NULL;
   goodix_transport_free (operation);
@@ -727,15 +739,15 @@ goodix_transport_ack (GoodixTransport *operation)
       operation->phase = GOODIX_TRANSPORT_RESPONSE;
       operation->deadline_us = g_get_monotonic_time () + operation->response_timeout_ms * 1000LL;
       g_clear_object (&operation->cancellable);
-      if (operation->cmd.category == 0x0a && operation->cmd.command == 4)
+      if (operation->cmd.category == GOODIX_PROTO_CATEGORY_SYSTEM && operation->cmd.command == 4)
         operation->cancellable = g_object_ref (goodix_session_io_cancellable (operation->dev));
       goodix_transport_receive (operation, operation->response_timeout_ms);
     }
 }
 
-/* Checks whether a reply for the shared response @slot answers some other
- * command than the one in flight, on a variant where that matters. A stale
- * firmware reply must not complete a reset that shares its slot. */
+/* Checks whether a reply for @slot answers another command than the one in
+ * flight, on a variant whose replies_match_command is set. A stale firmware
+ * reply must not complete a reset that shares its slot. */
 static gboolean
 goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
                          guint8 category, guint8 command)
@@ -745,8 +757,7 @@ goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
   return goodix_variant (self)->replies_match_command && operation && !operation->record &&
          (operation->phase == GOODIX_TRANSPORT_SEND || operation->phase == GOODIX_TRANSPORT_ACK ||
           operation->phase == GOODIX_TRANSPORT_RESPONSE) &&
-         (slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
-          slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION) &&
+         goodix_response_slot_is_shared (slot) &&
          (category != operation->cmd.category || command != operation->cmd.command);
 }
 
@@ -846,7 +857,7 @@ goodix_rx_cell (GoodixTransport *operation,
 
       if (self->reply_valid)
         {
-          if (category == 0x0c)
+          if (category == GOODIX_PROTO_CATEGORY_NOTICE)
             {
               /* Notice publication shares the worker's coalescing slot, but
                * never supplies a raw FDT vector or mutates FDT bases. */
@@ -882,7 +893,7 @@ goodix_rx_cell (GoodixTransport *operation,
                 goto receive_more;
               return;
             }
-          if (category == 0x0d && command == 0 &&
+          if (category == GOODIX_PROTO_CATEGORY_MCU && command == 0 &&
               goodix_variant (self)->d0_requests_reconnect)
             {
               goodix_request_reconnect (self);
@@ -893,7 +904,7 @@ goodix_rx_cell (GoodixTransport *operation,
                 goto receive_more;
               return;
             }
-          if (category == 0x0d)
+          if (category == GOODIX_PROTO_CATEGORY_MCU)
             {
               /* Parser publication is independent of command, ACK, and GTLS
                * state. Preserve the native bounded byte stream and event. */
@@ -904,16 +915,18 @@ goodix_rx_cell (GoodixTransport *operation,
               goto receive_more;
             }
           GoodixResponseSlot slot =
-            category == 3 && command == 3 ? GOODIX_RESPONSE_MANUAL :
-            category == 9 ? GOODIX_RESPONSE_CONFIG :
-            category == 0x0a && (command == 0 || command == 1 || command == 4) ? GOODIX_RESPONSE_SYSTEM :
-            category == 8 ? GOODIX_RESPONSE_REGISTER :
-            category == 0x0a && command == 3 ? GOODIX_RESPONSE_OTP :
-            category == 0x0f ? GOODIX_RESPONSE_FIRMWARE :
-            category == 0x0e ? GOODIX_RESPONSE_PRODUCTION : GOODIX_RESPONSE_NONE;
-          gboolean shared = slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
-                            slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION ||
-                            category == 0x0f;
+            category == GOODIX_PROTO_CATEGORY_FDT && command == GOODIX_PROTO_CMD_FDT_MANUAL ?
+              GOODIX_RESPONSE_MANUAL :
+            category == GOODIX_PROTO_CATEGORY_CONFIG ? GOODIX_RESPONSE_CONFIG :
+            category == GOODIX_PROTO_CATEGORY_SYSTEM && (command == 0 || command == 1 || command == 4) ?
+              GOODIX_RESPONSE_SYSTEM :
+            category == GOODIX_PROTO_CATEGORY_REGISTER ? GOODIX_RESPONSE_REGISTER :
+            category == GOODIX_PROTO_CATEGORY_SYSTEM && command == 3 ? GOODIX_RESPONSE_OTP :
+            category == GOODIX_PROTO_CATEGORY_FIRMWARE ? GOODIX_RESPONSE_FIRMWARE :
+            category == GOODIX_PROTO_CATEGORY_PRODUCTION ? GOODIX_RESPONSE_PRODUCTION :
+            GOODIX_RESPONSE_NONE;
+          gboolean shared = goodix_response_slot_is_shared (slot) ||
+                            category == GOODIX_PROTO_CATEGORY_FIRMWARE;
 
           if (goodix_reply_is_foreign (self, slot, category, command))
             {
@@ -923,13 +936,14 @@ goodix_rx_cell (GoodixTransport *operation,
               goodix_proto_rx_reset (&self->rx);
               goto receive_more;
             }
-          if ((category == 0x0f || (category == 9 && command == 2)) && !payload_len)
+          if ((category == GOODIX_PROTO_CATEGORY_FIRMWARE ||
+               (category == GOODIX_PROTO_CATEGORY_CONFIG && command == 2)) && !payload_len)
             {
               error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                 "Status reply is too short");
               goto protocol_error;
             }
-          if (category == 9 && command == 2)
+          if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == 2)
             self->config_response_status = payload[0];
 
           /* DataFromDevice publishes these shared stores without a matching
@@ -937,11 +951,11 @@ goodix_rx_cell (GoodixTransport *operation,
            * Retain every unwritten suffix, including beyond the firmware view. */
           if (shared)
             {
-              gsize offset = category == 0x0e ? 4 : 0;
-              gsize count = category == 0x0f ? MIN (payload_len, 1) :
+              gsize offset = category == GOODIX_PROTO_CATEGORY_PRODUCTION ? 4 : 0;
+              gsize count = category == GOODIX_PROTO_CATEGORY_FIRMWARE ? MIN (payload_len, 1) :
                             MIN (payload_len, sizeof (self->shared_response_storage) - offset);
 
-              if (category == 0x0e)
+              if (category == GOODIX_PROTO_CATEGORY_PRODUCTION)
                 {
                   guint32 length = GUINT32_TO_LE ((guint32) payload_len);
                   memcpy (self->shared_response_storage, &length, sizeof (length));
@@ -977,12 +991,13 @@ goodix_rx_cell (GoodixTransport *operation,
               goodix_transport_complete (operation, NULL);
               return;
             }
-          else if (category == 3 && (command == 1 || command == 2))
+          else if (category == GOODIX_PROTO_CATEGORY_FDT &&
+                   (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP))
             {
               GoodixFdtEventType type;
               GoodixProfile9FdtEvent event;
               g_autoptr(GError) event_error = NULL;
-              GoodixProfile9FdtWaitMode mode = command == 1 ?
+              GoodixProfile9FdtWaitMode mode = command == GOODIX_PROTO_CMD_FDT_DOWN ?
                 GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
 
               if (payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
@@ -1217,9 +1232,7 @@ const GoodixVariant goodix_variant_direct = {
   .replies_match_command = FALSE,
   .channel_restart_disarms = FALSE,
   /* deviceInit runs the three-attempt wrapper twice; the event restart once. */
-  .channel_attempts = 6,
-  .channel_restart_attempts = 3,
-  .channel_reconnect_attempts = 3,
+  .channel_attempts = { .open = 6, .after_failed_read = 3, .reconnect = 3 },
   .d0_requests_reconnect = FALSE,
   .command_budget = goodix_direct_command_budget,
   .read_psk_hash = goodix_read_psk_hash_direct,
