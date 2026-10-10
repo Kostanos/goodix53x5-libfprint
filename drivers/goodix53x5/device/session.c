@@ -755,13 +755,17 @@ goodix_start_gtls_restart (FpDevice *dev, GoodixGtlsRestartDone done,
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   const GoodixChannelAttempts *attempts = &goodix_family (self)->channel.attempts;
-  FpiSsm *ssm = goodix_gtls_retry_new (dev, self->reconnect_requested ?
+  gboolean reconnect = self->reconnect_pending != 0;
+  FpiSsm *ssm = goodix_gtls_retry_new (dev, reconnect ?
                                        attempts->reconnect : attempts->after_failed_read);
   GoodixGtlsRetry *retry = fpi_ssm_get_data (ssm);
 
   g_assert (!self->transport && !self->gtls_restart_active);
-  retry->reason = self->reconnect_requested ? GOODIX_CHANNEL_RECONNECT : GOODIX_CHANNEL_FAILED_READ;
-  self->gtls_restart_pending = FALSE;
+  retry->reason = reconnect ? GOODIX_CHANNEL_RECONNECT : GOODIX_CHANNEL_FAILED_READ;
+  self->reconnect_requested = reconnect;
+  if (reconnect)
+    self->reconnect_pending--;
+  self->gtls_restart_pending = self->reconnect_pending != 0;
   self->gtls_restart_active = TRUE;
   retry->restart_done = done;
   retry->restart_data = data;

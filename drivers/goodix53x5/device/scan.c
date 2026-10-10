@@ -311,7 +311,6 @@ goodix_scan_restarted_before_arm (FpDevice *dev, GError *error, gpointer user_da
   FpiSsm *ssm = user_data;
   gboolean reconnect = self->reconnect_requested;
 
-  self->reconnect_requested = FALSE;
   if (error)
     fpi_ssm_mark_failed (ssm, error);
   else
@@ -327,6 +326,11 @@ goodix_scan_restart_before_arm (FpiSsm *ssm, FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
+  if (self->reconnect_requested)
+    {
+      self->reconnect_requested = FALSE;
+      return FALSE;
+    }
   if (!self->gtls_restart_pending || !goodix_family (self)->channel.restart_disarms)
     return FALSE;
   goodix_start_gtls_restart (dev, goodix_scan_restarted_before_arm, ssm);

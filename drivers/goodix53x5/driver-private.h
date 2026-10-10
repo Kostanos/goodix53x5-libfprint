@@ -193,10 +193,9 @@ struct _FpiDeviceGoodix53x5
   gboolean config_lost;
   gboolean config_restore_pending;
   gboolean config_restore_active;
-  /* Set when the sensor asks for a new secure channel with a D0 message, on
-   * a family that sends one; the scan's channel restart then arms
-   * finger-down, as the vendor's reconnect handler does. */
+  /* The selected reconnect arms down before any queued reconnect starts. */
   gboolean reconnect_requested;
+  guint reconnect_pending;
   /* Open/resume and reconnect check a pending PSK hash; failed-read recovery
    * retains it. Cleared only after a passed check, including across suspend. */
   gboolean psk_refresh_pending;

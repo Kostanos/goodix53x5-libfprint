@@ -706,15 +706,13 @@ goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
          !goodix_family (self)->protocol.reply_answers (category, command, &operation->cmd);
 }
 
-/* Requests a new secure-channel session that arms finger-down, as the
- * sensor asked; a restart already running stands for it. */
+/* Each sensor request owns a new session followed by a finger-down arm. */
 static void
 goodix_request_reconnect (FpiDeviceGoodix53x5 *self)
 {
   fp_info ("Sensor requested a new %s session", goodix_family (self)->channel.name);
-  self->reconnect_requested = TRUE;
-  if (!self->gtls_restart_active)
-    self->gtls_restart_pending = TRUE;
+  self->reconnect_pending++;
+  self->gtls_restart_pending = TRUE;
 }
 
 void
@@ -1263,6 +1261,7 @@ goodix_transport_invalidate (FpDevice *dev)
   self->image_error_history = FALSE;
   self->gtls_restart_pending = FALSE;
   self->reconnect_requested = FALSE;
+  self->reconnect_pending = 0;
   /* psk_refresh_pending survives: the sensor stays unkeyed across a suspend
    * until the refresh runs, as the vendor's Stop keeps its flag for Start. */
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
