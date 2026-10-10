@@ -57,6 +57,18 @@ test_wrapped_pack_header_rejects (void)
   g_assert_false (goodix_pack_read_header (header, &len));
 }
 
+/* Data too long for the 16-bit pack length is refused, not framed. */
+static void
+test_wrapped_pack_too_long (void)
+{
+  gsize len = G_MAXUINT16 + 1, framed_len;
+  g_autofree guint8 *data = g_malloc0 (len);
+  g_autofree guint8 *longest = goodix_frame_pack (GOODIX_PACK_TLS, data, len - 1, &framed_len);
+
+  g_assert_nonnull (longest);
+  g_assert_null (goodix_frame_pack (GOODIX_PACK_TLS, data, len, &framed_len));
+}
+
 /* A misread header whose checksum happens to pass must not hold the stream
  * waiting for a pack that never comes. */
 static void
@@ -817,6 +829,7 @@ register_wrapped_tests (void)
 {
   g_test_add_func ("/goodix53x5/wrapped/pack-header", test_wrapped_pack_header);
   g_test_add_func ("/goodix53x5/wrapped/pack-header-rejects", test_wrapped_pack_header_rejects);
+  g_test_add_func ("/goodix53x5/wrapped/pack-too-long", test_wrapped_pack_too_long);
   g_test_add_func ("/goodix53x5/wrapped/bad-header-drops-stream",
                    test_wrapped_bad_header_drops_stream);
   g_test_add_func ("/goodix53x5/wrapped/reader-error-drops-stream",

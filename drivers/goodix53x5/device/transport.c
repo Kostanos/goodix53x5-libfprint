@@ -441,6 +441,12 @@ goodix_transport_send (GoodixTransport *operation)
       chunked = goodix_variant (self)->frame (msg, msg_len, &padded_len);
       g_free (msg);
     }
+  if (!chunked)
+    {
+      goodix_transport_complete (operation, fpi_device_error_new_msg (
+                                   FP_DEVICE_ERROR_PROTO, "Message too long to frame"));
+      return;
+    }
 
   transfer = fpi_usb_transfer_new (dev);
   fpi_usb_transfer_fill_bulk_full (transfer, goodix_variant (self)->ep_out,

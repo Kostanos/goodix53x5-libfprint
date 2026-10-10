@@ -83,10 +83,11 @@ typedef struct
   void              (*read_psk_hash) (FpiSsm *ssm, FpDevice *dev);
   /* Returns a new SSM for one secure-channel handshake attempt. */
   FpiSsm           *(*new_channel_attempt) (FpDevice *dev);
-  /* Returns the bytes to write for the protocol message @msg. */
+  /* Returns the bytes to write for the protocol message @msg, or NULL when
+   * the framing cannot carry it. */
   guint8           *(*frame) (const guint8 *msg, gsize msg_len, gsize *out_len);
-  /* Returns the bytes to write for a raw TLS record; NULL on a variant
-   * without a TLS channel. */
+  /* Returns the bytes to write for a raw TLS record, or NULL when the framing
+   * cannot carry it; NULL on a variant without a TLS channel. */
   guint8           *(*frame_record) (GBytes *record, gsize *out_len);
   /* Hands the bytes of one completed IN transfer to the receiver. */
   void              (*receive) (FpiDeviceGoodix53x5 *self,

@@ -76,7 +76,7 @@ goodix_pack_read_header (const guint8 *header, gsize *len)
 }
 
 /* Returns @data as one pack of kind @flags, zero-padded to whole 64-byte
- * writes. */
+ * writes, or NULL when @data does not fit the header's 16-bit length. */
 static guint8 *
 goodix_frame_pack (guint8 flags, const guint8 *data, gsize data_len, gsize *out_len)
 {
@@ -84,8 +84,8 @@ goodix_frame_pack (guint8 flags, const guint8 *data, gsize data_len, gsize *out_
               GOODIX_USB_CHUNK_SIZE * GOODIX_USB_CHUNK_SIZE;
   guint8 *framed;
 
-  /* Every message and TLS record this driver sends fits the 16-bit length. */
-  g_assert (data_len <= G_MAXUINT16);
+  if (data_len > G_MAXUINT16)
+    return NULL;
   framed = g_malloc0 (len);
   goodix_pack_write_header (framed, flags, data_len);
   memcpy (framed + GOODIX_PACK_HEADER, data, data_len);
