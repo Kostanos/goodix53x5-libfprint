@@ -118,6 +118,37 @@ test_wrapped_reader_error_drops_stream (void)
 }
 
 static void
+count_join (FpDevice *dev, gpointer data)
+{
+  (*(guint *) data)++;
+}
+
+/* A reader join and a new channel attempt each start a new stream, so a
+ * partial pack kept from before is not prepended to the next transfer. */
+static void
+test_wrapped_join_and_reset_drop_stream (void)
+{
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixTransport idle = { .dev = dev };
+  guint8 partial[GOODIX_PACK_HEADER + 2] = { 0 };
+  guint joins = 0;
+
+  goodix_pack_write_header (partial, 0xa0, 16);
+  goodix_receive_wrapped (self, &idle, partial, sizeof (partial));
+  self->reader = g_new0 (GoodixReader, 1);
+  self->reader->dev = g_object_ref (dev);
+  goodix_transport_quiesce (dev, count_join, &joins);
+  g_assert_cmpuint (joins, ==, 1);
+  g_assert_cmpuint (self->pack_rx->len, ==, 0);
+
+  goodix_receive_wrapped (self, &idle, partial, sizeof (partial));
+  goodix_transport_reset_mcu (dev);
+  g_assert_cmpuint (self->pack_rx->len, ==, 0);
+  g_clear_object (&action_cancel_token);
+}
+
+static void
 record_state (FpiSsm *ssm, FpDevice *dev)
 {
   *(int *) fpi_ssm_get_data (ssm) = fpi_ssm_get_cur_state (ssm);
@@ -860,6 +891,8 @@ register_wrapped_tests (void)
                    test_wrapped_bad_header_drops_stream);
   g_test_add_func ("/goodix53x5/wrapped/reader-error-drops-stream",
                    test_wrapped_reader_error_drops_stream);
+  g_test_add_func ("/goodix53x5/wrapped/join-and-reset-drop-stream",
+                   test_wrapped_join_and_reset_drop_stream);
   g_test_add_func ("/goodix53x5/wrapped/restart-rearm-yields-to-stop",
                    test_wrapped_restart_rearm_yields_to_stop);
   g_test_add_func ("/goodix53x5/wrapped/tls-truncated-record",

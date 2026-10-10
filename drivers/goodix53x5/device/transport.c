@@ -1192,6 +1192,14 @@ const GoodixVariant goodix_variant_direct = {
   .decrypt_frame = goodix_decrypt_frame_gtls,
 };
 
+/* Drops the partial wrapped pack kept for the next transfer, if any. */
+static void
+goodix_drop_pack_stream (FpiDeviceGoodix53x5 *self)
+{
+  if (self->pack_rx)
+    g_byte_array_set_size (self->pack_rx, 0);
+}
+
 static void
 goodix_reader_joined (GoodixReader *reader)
 {
@@ -1202,6 +1210,8 @@ goodix_reader_joined (GoodixReader *reader)
 
   g_assert (!reader->pending);
   self->reader = NULL;
+  /* The next reader starts a new stream: a partial pack cannot continue. */
+  goodix_drop_pack_stream (self);
   g_clear_object (&reader->cancel);
   g_clear_error (&reader->error);
   g_free (reader);
@@ -1261,8 +1271,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       reader->error = error;
       self->needs_reinit = TRUE;
       /* The lost transfer leaves no way to find the next pack header. */
-      if (self->pack_rx)
-        g_byte_array_set_size (self->pack_rx, 0);
+      goodix_drop_pack_stream (self);
       if (operation != &idle)
         goodix_transport_complete (operation, g_error_copy (error));
       return;
@@ -1315,6 +1324,8 @@ goodix_transport_reset_mcu (FpDevice *dev)
     g_byte_array_set_size (self->mcu_rx, 0);
   g_clear_pointer (&self->mcu_reply, g_bytes_unref);
   self->reply_valid = FALSE;
+  /* A pack cut short by the previous channel never completes. */
+  goodix_drop_pack_stream (self);
   /* The native attempt resets ring indices, not the auto-reset event. */
 }
 
@@ -1337,8 +1348,7 @@ goodix_transport_invalidate (FpDevice *dev)
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
-  if (self->pack_rx)
-    g_byte_array_set_size (self->pack_rx, 0);
+  goodix_drop_pack_stream (self);
   self->reply_valid = FALSE;
   self->rx_idle_partial = FALSE;
   self->pending_fdt.event.pending = FALSE;
