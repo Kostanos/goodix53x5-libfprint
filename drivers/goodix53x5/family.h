@@ -68,6 +68,8 @@ typedef struct
   gboolean (*repair_arm) (guint8 status);
   /* Selects up rather than down after a wake notice. */
   gboolean (*wake_arm_up) (gboolean waiting_up);
+  /* Publishes a valid ESD notice's IRQ in the family's response storage. */
+  gboolean (*notice_irq) (FpiDeviceGoodix53x5 *self, const guint8 *payload, gsize len);
   /* TRUE where an ACK that does not come in time is not an error for a
    * command that expects data: the wait moves on to the data, as the
    * vendor's _IoHubExec does. FALSE retries the command. */

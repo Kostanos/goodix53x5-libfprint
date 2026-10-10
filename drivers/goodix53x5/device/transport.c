@@ -820,24 +820,17 @@ goodix_rx_cell (GoodixTransport *operation,
             {
               /* Notice publication shares the worker's coalescing slot, but
                * never supplies a raw FDT vector or mutates FDT bases. */
-              if (command <= 1)
+              gboolean published = command == 1 ||
+                (command == 0 && goodix_family (self)->protocol.notice_irq (self, payload, payload_len));
+
+              if (published)
                 {
-                  if (command == 0)
-                    {
-                      /* Native 019264 aliases the command response cache.
-                       * Both the notice IRQ and an already-signaled response
-                       * observe this prefix and its retained unwritten suffix. */
-                      memcpy (self->shared_response_storage, payload,
-                              MIN (payload_len, sizeof (self->shared_response_storage)));
-                      memcpy (self->notice_irq, self->shared_response_storage,
-                              sizeof (self->notice_irq));
-                    }
                   self->pending_fdt.type = command == 0 ?
                                            GOODIX_FDT_EVENT_ESD : GOODIX_FDT_EVENT_WAKE;
                   self->pending_fdt.event.pending = TRUE;
                 }
               goodix_proto_rx_reset (&self->rx);
-              if (command <= 1 && operation->phase == GOODIX_TRANSPORT_EVENT)
+              if (published && operation->phase == GOODIX_TRANSPORT_EVENT)
                 goodix_transport_complete (operation, NULL);
               else
                 goto receive_more;

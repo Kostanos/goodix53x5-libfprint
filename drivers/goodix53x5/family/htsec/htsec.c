@@ -96,6 +96,15 @@ goodix_htsec_wake_arm_up (gboolean waiting_up)
   return waiting_up;
 }
 
+static gboolean
+goodix_htsec_notice_irq (FpiDeviceGoodix53x5 *self, const guint8 *payload, gsize len)
+{
+  memcpy (self->shared_response_storage, payload,
+          MIN (len, sizeof (self->shared_response_storage)));
+  memcpy (self->notice_irq, self->shared_response_storage, sizeof (self->notice_irq));
+  return TRUE;
+}
+
 /* 53x5 native gives no message a meaning beyond its reply. */
 static GoodixSensorEvent
 goodix_htsec_event (guint8 category, guint8 command, const guint8 *payload, gsize len)
@@ -166,6 +175,7 @@ const GoodixFamily goodix_family_htsec = {
     .retry_write = goodix_htsec_retry_write,
     .repair_arm = goodix_htsec_repair_arm,
     .wake_arm_up = goodix_htsec_wake_arm_up,
+    .notice_irq = goodix_htsec_notice_irq,
     .ack_timeout_waits_for_data = FALSE,
     .event = goodix_htsec_event,
     .reply_answers = goodix_htsec_reply_answers,

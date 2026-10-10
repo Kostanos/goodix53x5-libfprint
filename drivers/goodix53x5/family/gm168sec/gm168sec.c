@@ -321,6 +321,15 @@ goodix_gm168sec_rearm_after_capture (FpiDeviceGoodix53x5 *self)
   return !self->psk_refresh_pending;
 }
 
+static gboolean
+goodix_gm168sec_notice_irq (FpiDeviceGoodix53x5 *self, const guint8 *payload, gsize len)
+{
+  if (len < sizeof (self->notice_irq))
+    return FALSE;
+  memcpy (self->notice_irq, payload, sizeof (self->notice_irq));
+  return TRUE;
+}
+
 const GoodixFamily goodix_family_gm168sec = {
   .link = {
     .usb_interface = 0,
@@ -340,6 +349,7 @@ const GoodixFamily goodix_family_gm168sec = {
     .retry_write = goodix_gm168sec_retry_write,
     .repair_arm = goodix_gm168sec_repair_arm,
     .wake_arm_up = goodix_gm168sec_wake_arm_up,
+    .notice_irq = goodix_gm168sec_notice_irq,
     .ack_timeout_waits_for_data = TRUE,
     .event = goodix_gm168sec_event,
     .reply_answers = goodix_gm168sec_reply_answers,
