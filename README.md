@@ -22,19 +22,8 @@ The project is currently validated on a **Dell XPS 13 9305** with a
 but have not received the same hardware validation. Check your sensor's ID with
 `lsusb -d 27c6:`.
 
-`27c6:533c` in the **Dell XPS 13 9310** is the same chip behind a GM168SEC
-secure element, with its own USB framing and TLS 1.2-PSK instead of GTLS. It is
-tested on one XPS 13 9310 (open, enrollment, matching and rejection), and its
-transport is not validated byte for byte against the vendor driver as the
-`27c6:5335` path is. The driver never writes a PSK to it, so the sensor must
-hold the all-zero default PSK or have its matching Windows key imported. The
-detect script below checks for the default key.
-
-> [!WARNING]
-> **533c and Windows Hello.** Once Dell's Windows driver has used a 533c, the
-> sensor holds a key set by Windows, and this driver refuses to open it until
-> you [import that key](WINDOWS-DUAL-BOOT.md#533c-windows-key-import). The
-> import has not been tested on hardware yet.
+`27c6:533c` in the **Dell XPS 13 9310** is also supported. It has been tested
+on fewer laptops and without the byte-level validation of `27c6:5335`.
 
 Before installing on an unlisted Goodix USB device, run:
 
@@ -220,6 +209,11 @@ Normal Linux-only installations retain the automatic all-zero PSK setup. An
 optional Windows key file enables shared-key operation without changing the
 default path. See the [Windows dual-boot migration guide](WINDOWS-DUAL-BOOT.md).
 
+> [!WARNING]
+> **`27c6:533c` only.** Once Windows Hello has used the sensor, this driver
+> cannot open it until you
+> [import the Windows key](WINDOWS-DUAL-BOOT.md#533c-windows-key-import).
+
 ## Limitations And Security
 
 - This is an experimental, out-of-tree driver tied to pinned libfprint and
@@ -267,6 +261,8 @@ distribution's packages afterwards if you want them.
 - [AndyHazz](https://github.com/AndyHazz) for the original
   [Goodix 53x5 libfprint driver](https://github.com/AndyHazz/goodix53x5-libfprint),
   from which this repository was forked
+- [nikicat](https://github.com/nikicat) for adding support for the
+  `27c6:533c` sensor in the Dell XPS 13 9310
 - Protocol research and earlier Goodix Linux work from
   [goodix-fp-linux-dev](https://github.com/goodix-fp-linux-dev)
 - libfprint and fprintd from the
