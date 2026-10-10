@@ -63,7 +63,10 @@ SelfCheck, PSK, firmware-decision and chip-ID failures abort loading.
 
 SelfCheck reads the firmware string through `McuGetFirmwareVersion`. A failed
 read takes the wake/reset helper `W:0x180074158` and another read. Parser
-`W:0x180079cdc` splits the underscore-separated string into this record:
+`W:0x180079cdc` requires three underscore separators. L parser
+`0x00118620` tests the three separator searches at `0x0011865e`,
+`0x00118695` and `0x001186c9`; a missing separator fails parsing.
+The parsed record is:
 
 | Offset | Capacity | Content |
 | --- | --- | --- |
@@ -212,6 +215,17 @@ two-byte sleep payload above. EC control is selected at W MCU operation
 their transaction fails. Their explicit ACK budgets are listed under
 [timeouts](#ackdata-completion-and-timeouts).
 
+L configuration `0x00249388=1`, `0x00249398=1`, `0x002493a0=0` selects
+the EC/power-button shield table `0x00249340` during logic construction
+at `0x00143640`. Enable `0x0014fa60` and Disable `0x0014f900` reach
+`McuSetEcCtrl` through worker `0x0014f7c0`. The selected enable command is
+`ae / 01 00 01`; disable is `ae / 00 00 00`.
+
+Libfprint open at `L:0x001566f0` calls `libgxfp_start_session` at
+`0x00153070`. It enables the shield at `0x00153237`, after logic Start
+and before engine-session initialization. Session stop disables it at
+`0x001535aa`; scan cancellation disables it at `0x00153e94`.
+
 ### Register Read and Chip ID
 
 The selected `McuGetChipId` at `W:0x18007a180` calls `_McuReadRegister` at
@@ -354,6 +368,7 @@ W's chip-ID and fingerprint-reset helpers obtain both ACK and data budgets
 from the MCU getters above. `FpMcuSwitchToSleepMode` instead supplies an
 explicit 1500 ms ACK timeout, and `McuSetEcCtrl` supplies 500 ms. Both are
 ACK-only transactions with no data buffer or data wait.
+L's `McuSetEcCtrl` instead supplies a 1500 ms ACK timeout.
 
 ACK payload byte 1 also carries a general configuration-loss notification.
 `McuParseMsg` at `W:0x18007aef0` sets event field `+0x08` to one when
@@ -363,8 +378,11 @@ dispatches that field to MCU event callback `+0x70`, selected
 command. The handler sets logic PSK-refresh flag `+0xe0=1`. When logic
 `+0xd0 != 0` and recursion guard `DAT_180173cd4 == 0`, it sets the guard,
 calls `LogicDownloadChipConfig` at `W:0x1800641a0`, logs failure if returned,
-and clears the guard. L's corresponding repair route is
-`LogicEvtMcuPowerLost 0x00145670 -> LogicDownloadChipConfig 0x00144980`.
+and clears the guard. L's `LogicEvtMcuPowerLost` at `0x00145670` sets
+logic `+0xec=1` at `0x001456d8`, before its initialization/recursion-gated
+restore call at `0x001457ac` to `LogicDownloadChipConfig 0x00144980`.
+Neither callback arms FDT. The flag's Stop/Start lifetime is described
+under [D0 exit and entry](#d0-exit-and-entry).
 
 ## TLS Configuration and Connection Lifetime
 
@@ -432,6 +450,12 @@ and connected flags, cleans up TLS, closes handshake event `+0xc0`, frees
 ring backing `+0xd8`, destroys ring object `+0xd0`, and nulls those handles
 and pointers.
 
+L Stop at `0x0014c310` likewise calls MCU StopTLS slot `+0x98` on an
+initialized non-S0-idle transition. Stop leaves the configuration-loss/
+PSK-refresh flag `logic+0xec` set. Start at `0x0014c610` reads it at
+`0x0014c8f4`, calls ProcessPsk at `0x0014c955`, then clears it at
+`0x0014c963`. W retains its corresponding `logic+0xe0` flag across Stop.
+
 On D0 entry, `InitThread` at `W:0x18004e680` reuses an existing logic
 context and calls HV Start at `W:0x18006b650`. In Start, argument
 `start_args[2] == 1` with PSK-refresh flag `+0xe0 == 0` skips the TLS,
@@ -444,6 +468,8 @@ when `+0xe0 == 1`. Configuration download uses the cold-start predicate;
 base reuse uses the retained-validity predicate described under
 [image and reconnect callbacks](#image-and-reconnect-callbacks).
 The independent ACK configuration-loss callback can also download configuration.
+L Start has the same first TLS call plus one retry under the selected
+defaults; its repeated-reset option at `0x00249384` is zero.
 
 ### Failed TLS Read
 
@@ -455,7 +481,9 @@ failure if it fails. There is no intervening second-failure threshold.
 Scheduling recovery does not wait for the replacement handshake to finish.
 
 L receive routine `0x0011f1b0` likewise sends its first nonpositive TLS read
-to restart helper `0x0011bfa0`.
+to restart helper `0x0011bfa0`. Its worker `0x0011be70`, like W's worker,
+only starts TLS and does not arm FDT. The capture-handler continuation is
+separate, as described below.
 
 ### Reconnect Event and Finger-Detect Re-arm
 
@@ -483,11 +511,25 @@ test the second TLS call's result before the down-arm call. A zero event
 value skips both TLS start and this re-arm.
 
 The failed-read `StartTlsThread` calls neither this event handler nor the
-down-arm operation. Thus down re-arming belongs to the nonzero reconnect
-event path, not to every invocation of `McuStartTls`.
+down-arm operation. The reconnect handler owns its down-arm independently
+of `McuStartTls`.
 
 L `LogicEvtTlsConn` at `0x00145340` also calls its down-operation slot
-`+0xa8`, using retained base at logic `+0x108`.
+`+0xa8`, using retained base at logic `+0x108`. Its two TLS call sites are
+`0x00145489` and `0x001454de`, followed by down-arm at `0x00145530`.
+
+Capture failure has an independent continuation. L `HandleFdt` at
+`0x0014aff0` attempts two image acquisitions; failure reaches `0x0014bc38`.
+Configuration-loss/PSK-refresh flag `logic+0xec != 0` suppresses the arm.
+Otherwise waiting-up `logic+0xd8` selects up slot `+0xb0` with retained
+base `logic+0x110`, or down slot `+0xa8` with retained base `logic+0x108`
+when clear. Ordinary failed capture reaches this continuation before
+setting waiting-up and therefore arms down.
+
+W `HandleFdtDown` at `0x18006cee4` reaches continuation `0x18006d4a7`.
+Its guard is `logic+0xe0`; waiting-up `+0xcc` selects up slot `+0xb8`
+with base `+0x100`, or down slot `+0xb0` with base `+0xf8`. This arm
+belongs to the capture handler, not the asynchronous TLS worker.
 
 ## PSK Validation and Provisioning
 
@@ -507,9 +549,34 @@ outside `IAP`/`TESTIAP`, it erases APP through `W:0x180079ed0` with argument
 and recurses. In IAP it reaches `PresetPskWriteKey` and revalidation, with
 up to three provisioning attempts.
 
-The zero-filled sample passed to `GfSealData` (`W:0x1800477dc`) in
-`ProcessPsk` determines sealed-buffer length. It is not the key passed to
-the Windows provisioning writer.
+The zero-filled 32-byte sample passed to `GfSealData` (`W:0x1800477dc`)
+at `W:0x180072ff5` determines sealed-buffer length `N`. ProcessPsk passes
+that length to validation at `0x180073087..0x18007308e`. It is not the key
+passed to the Windows provisioning writer.
+
+`PresetPskReadSpecDataG` at `W:0x18004a128` passes capacity `N+9` and
+selector `[slot, 0]` to `PresetPskReadG` at `W:0x180074438`. The read
+transaction uses command `0xe4` with four LE32 fields; its reply is:
+
+```text
+request: LE32(count) | LE32(offset) | LE32(slot) | LE32(0)
+reply:   status[1] | LE32(slot) | LE32(fragment_length) | fragment
+```
+
+The reader computes `ceil((N+9)/256)` iterations at
+`W:0x18007452b..0x18007453a`. Count starts at 256; offset advances by the
+previous reply's fragment length at `0x180074590`. The last request uses
+`N-offset` at `0x180074598..0x18007459e`; count and offset are stored at
+`0x1800745b0/0x1800745b4`, and `0x18007460b` sends the 16-byte payload.
+A nonzero reply status fails the read.
+
+At `W:0x1800746cf..0x1800746e4`, the first copy takes `reply+1` for
+`fragment_length+8` bytes, retaining the slot and first-fragment length.
+Later copies take only `reply+9` for `fragment_length` bytes into
+`assembled+8+offset`. The wrapper strips the retained header at
+`0x18004a347`, copying exactly `N` value bytes. The reply carries no total
+length, and the wrapper neither discovers nor updates `N` from it.
+The returned value is the DPAPI blob, without the provisioning TLV header.
 
 ### Windows Random PSK
 
@@ -524,9 +591,18 @@ aborts provisioning.
 The writer passes the generated key to `CryptProtectData` for host slot
 `0xbb010002` and to sensor wrapper `W:0x180006780` for slot `0xbb010003`.
 Each wrapped value is encoded as a 32-bit tag, 32-bit length, and value.
+For `0xbb010002`, the writer stores the tag at `W:0x18004a857`, selects
+TLV `+8` for the blob at `0x18004a8d9`, and stores its LE32 length at
+TLV `+4` at `0x18004a961`.
 Both representations contain the same generated PSK. The selected Windows
 provisioning policy is therefore a random key, while successful validation
 preserves an existing key.
+
+Both the sample seal and actual-key seal call `CryptProtectData` with
+flags zero, no optional entropy, and description string
+`This is the description string.` at `W:0x1800eadc0`. The calls are at
+`0x18004784b` and `0x18004a8b0`. Slot `0xbb010003` holds the sensor-wrapped
+representation, not a DPAPI blob.
 
 ### Geneva Write Fragments
 

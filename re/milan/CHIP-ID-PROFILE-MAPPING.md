@@ -130,6 +130,10 @@ addresses below refer to PID533C; reference functions refer to 2.0.310.900.
 | PID532D | `06/08/2020,3.0.39.300` | `Wbdi.dll` | `257feb9c9c486fe972b1b03978906e2844e08bcb69ff5999c81cc1e3e58169ee` |
 | PID532D | same | `GoodixEngineAdapter.dll` | `ea75f3aa468c82a88467988dbb433c30fe73361cd875de6c54d9c559d1025a3c` |
 
+The PID533C `SessionService.exe` has SHA-256
+`03da5f5b7791eccf97cbd0c35d7bd18f392a6081f93ac1153ab451c7d46d6a9f`
+and image base `0x140000000`.
+
 The comparison PID5395 binary belongs to Dell **6CPKF**, package
 **2.1.32.400, A03**, with INF DriverVer `01/18/2019,2.1.32.400` and an
 explicit `USB\VID_27C6&PID_5395&MI_00` match:
@@ -139,6 +143,15 @@ explicit `USB\VID_27C6&PID_5395&MI_00` match:
 - Package SHA-256: `b283e29faaae295f8bc1d5b56bd3932bec3423969aa23be63a469d3f976010a4`
 - `drivers/production/Windows10-x64/usbinterface.dll` SHA-256:
   `4bf0d283eb226e7e8d9cfeb42cb593872bb00d5a4d05a92fe295a0be8ebc1f9e`
+- `WBDI_Data_Enclave.signed.dll` SHA-256:
+  `65e336966328c4c52cf279d877acadefb2b883339198ff3d108a3e780628970e`
+
+In the comparisons below, **W** names 600N5 PID533C `Wbdi.dll`, **M**
+names PD5CK 2.0.310.900 `usbinterface.dll`, and **U/UE** name 6CPKF's
+`usbinterface.dll` and `WBDI_Data_Enclave.signed.dll`. **L** names Linux
+TOD `libfprint-tod-goodix-53xc-0.0.6.so`, with analysis base `0x100000`;
+its exact identity is in the
+[transport note](GM168SEC-533C-TRANSPORT-CONTRACT.md#scope-and-binary-identity).
 
 The 2.0.310.900 binary identities are in
 [REFERENCE-DRIVER.md](REFERENCE-DRIVER.md). The engine version strings are:
@@ -270,6 +283,29 @@ builds four bytes: flags, HV, DAC low, DAC high. TX enabled/disabled gives
 Unlike this Wbdi index-9 selection's literal 6, the reference producer reads
 its enabled HV byte from configuration `+0x426`.
 
+L `MilanHvSerMcuGetImage` at `0x00139160` sends command `0x80` with
+`00 2c 02 vv 03` before the image request. `vv` is `0x05` when dynamic
+adjustment is requested and fingerprint-context `+0xa4 != 0`, otherwise
+`0x0a`. The send at `0x0013928b..0x0013929b` uses length 5. After a
+successful image and optional DAC adjustment, it sends command `0x80`
+with `00 2c 02 0a 02`. L aborts on the first write's failure and returns
+the tail write's result. W `0x18005f030` sends the same bytes at
+`0x18005f176` and `0x18005f23d`, but ignores the write results.
+PID538D uses the same function address; PID532D uses `0x18005f400`.
+
+M image function `0x1800074bc` has no surrounding register writes.
+U's selected image route is `0x1800065a0 -> 0x180007cb8`, SGX ecall 19,
+then UE `0x18003b760 -> 0x180035d20`. UE sends the image command through
+`0x18003d0f0` without those command-`0x80` writes.
+
+L `GetBrokenImage` at `0x0013d9e0` leaves the zero-allocated request's TX
+field zero, sets HV `+4=1`, and clears dynamic/finger fields `+8/+0xc`.
+The selected image encoder therefore emits flag `0x81`. W, PID538D and
+PID532D `GetBrokenImage` at `0x18004b020` use the same zero-TX policy.
+For profile 9, the pair uses base DAC and base DAC minus `0xc83/TCODE`.
+M `0x180012d38` and U `0x18001097c` instead request TX-on/HV-on, producing
+flag `0x01`.
+
 `FUN_180050d80` uses the selected property dimensions to return
 `108*88*3/2 + 4 = 14260` raw bytes. Image parsing follows
 `FUN_180050e10 -> FUN_18004adb0 -> FUN_1800529b0`; property index 9 selects
@@ -279,6 +315,87 @@ including the 14256-byte pixel input after removing four overhead bytes.
 Current counterparts are `device/calibration.c:goodix_device_parse_otp`,
 `device/commands.c:goodix_build_image_request`, and
 `device/image.c:goodix_device_decode_image`.
+
+### Base Refresh And Health History
+
+L `UpdateAllBase` at `0x00149f90` uses this order:
+
+| Call site | Operation |
+| --- | --- |
+| `0x0014a0ee` | Manual TX-on FDT |
+| `0x0014a14b` | TX-on base image |
+| `0x0014a164` | Health-image pair |
+| `0x0014a1bd` | Manual TX-off FDT |
+| `0x0014a28c` | TX-off base image, after FDT validation |
+| `0x0014a34e` | Final manual TX-on FDT |
+| `0x0014a701` | CheckOnBoot on the admitted base |
+
+Configuration `L:0x0024939c=1` selects active health table `0x002489e0`,
+whose `+0x20` is `GetBrokenImage 0x0013d9e0` and `+0x10` is
+`CheckOnBoot 0x0013e8b0`. Neither UpdateAllBase nor its ordinary refresh
+branches in `HandleFdt 0x0014aff0` uploads configuration first.
+W/PID538D `0x18006e3e8` and PID532D `0x18006e7b8` have the same order.
+M `0x180015c60` and U `0x180013644` upload configuration through slot
+`+0x40` at entry and take manual TX-off before the health pair.
+
+Whenever retained admission flag `L:logic+0xcc` is set, the base-refresh
+tail calls CheckOnBoot. Each successful call fills all 30 history entries
+and the estimate; health-context initialized byte `+0x48` is written,
+not used as a once-only guard. W/PID538D/PID532D `0x18004b5c0` has the same reseeding
+policy. M and U instead test once flag `+0x2e0` before their seed helpers
+`0x180012c1c` and `0x1800107dc`. U's test/call/set sequence is at
+`0x1800139eb..0x1800139f8`.
+
+L `CheckOnFdtUp` at `0x0013e000` acquires and measures the health pair,
+replaces an excessive current count, shifts/inserts history, then calls
+the estimate helper at `0x0013e2e0`. The replacement also changes the
+current measured count at `0x0013e194`. History and estimates live in
+the allocated health context at `+0xec4c`, `+0xec88` and `+0xec8a`.
+The excessive-count cutoff at `0x0013e129` is
+`floor(interior_pixels * 230 / 256)`, or 8190 for 108x88 with a one-pixel
+border. Counts above that cutoff enter replacement.
+
+Failed acquisition through `L:0x0013d9e0` or measurement through
+`0x0013dd50` returns before incrementing enrollment-history counter
+`+0x4e`; the increment is at `0x0013e3ac`. W/PID538D/PID532D
+`0x18004b760 -> 0x18004c424 -> 0x18004bdb8` uses the same insertion-first
+policy, and W `0x18004b760` increments only after success. M
+`0x180011b9c -> 0x1800138bc/0x180013b1c` and U
+`0x18000f718 -> 0x180011274/0x1800114cc` decide from old history and
+increment before acquisition.
+
+### Dynamic DAC Adjustment
+
+L Start reaches initializer `0x0013b3c0` through `0x00110cd0`; descriptor
+index 9 selects chip type `0x18` and adjust type 1. After successful
+dynamic capture, image function `0x00139160` reaches adjuster
+`0x0013b6d0` through `0x00138fa0 -> 0x00110e00`.
+
+Initializer `L:0x0013b690` installs four 16-bit values: high threshold
+3000, low threshold 800, high target 2700 and low target 1100.
+`0x0013b6a0` supplies limits 300 and 800. With default DAC `D`, gain is
+binary32 `TCODE * 0.283`, and bounds are:
+
+```text
+lower = max(0, D - 1 - trunc(300 / gain))
+upper = min(511, D + 1 + trunc(800 / gain))
+```
+
+W/PID538D initializer `0x18005c7a4` and PID532D `0x18005cb74` share the
+newer adjustment algorithm with descriptor-selected parameters.
+M `0x180007c84 -> 0x1800115a4` and UE `0x180036760 -> 0x1800385f0`
+instead use thresholds 3200/1500, target 2000, gain based on
+`(TCODE << 4) * 0.283`, a quarter-delta step, and bounds `D-4..D+30`.
+
+### ESD Notice Recovery
+
+L `LogicEvtNotice` at `0x00144cf0` resets/reads IRQ through selected
+methods, then compares `chip_id >> 8` with property `+0x3c`, family
+`0x220c`. The shift and comparison are at `0x00144e59/0x00144e60`.
+The notice-mask/failed-chip-read branch performs no extra immediate
+sensor reset. W/PID538D `0x180064760` and PID532D `0x180064b30` share
+this policy. M `0x18000d660` and U `0x18000ab34` compare the full saved
+chip ID and add that reset.
 
 ### Configuration Source And Low-DAC Predicate
 
