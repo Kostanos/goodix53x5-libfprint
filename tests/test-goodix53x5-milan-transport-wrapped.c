@@ -417,6 +417,13 @@ wrapped_open_answer (const WrappedOpen *sensor, gboolean *acked, guint *firmware
       ack_reply (usb.pending, io.command);
       *acked = TRUE;
     }
+  else if (io.command == 0xd0)
+    {
+      /* No ClientHello: the handshake attempt ends on its reply wait. */
+      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                             "No ClientHello"));
+      return;
+    }
   else if (io.command == 0xa8)
     reply (usb.pending, 0xa, 4, (const guint8 *) sensor->firmware, strlen (sensor->firmware) + 1);
   else if (io.command == 0xe4)
@@ -455,22 +462,19 @@ command_session_end (FpDevice *dev)
   g_clear_object (&action_cancel_token);
 }
 
-/* Runs open on a 533c up to its OTP read and returns the commands it wrote,
- * as "cmd(payload length:first payload byte)," each, with its error in
- * @error. */
+/* Runs @ssm on the 533c @dev, answering as @sensor, and returns the commands
+ * it wrote, as "cmd(payload length:first payload byte)," each, with its error
+ * in @error. */
 static gchar *
-run_wrapped_open (const WrappedOpen *sensor, GError **error)
+run_wrapped (FpDevice *dev, FpiSsm *ssm, const WrappedOpen *sensor, GError **error)
 {
-  g_autoptr(FpDevice) dev = wrapped_device_new ();
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   gboolean acked = FALSE;
   guint firmware_reads = 0;
 
   command_session_begin (dev);
   startup_trace = g_string_new (NULL);
-  fpi_ssm_start (fpi_ssm_new_full (dev, goodix_open_ssm_handler,
-                                  GOODIX_OPEN_READ_OTP, GOODIX_OPEN_READ_OTP,
-                                  "wrapped-open"), startup_done);
+  fpi_ssm_start (ssm, startup_done);
   for (guint step = 0; !io.completions && step < 200; step++)
     {
       if (!self->transport)
@@ -487,10 +491,22 @@ run_wrapped_open (const WrappedOpen *sensor, GError **error)
         wrapped_open_answer (sensor, &acked, &firmware_reads);
     }
   if (!io.completions)
-    g_error ("open did not finish: %s", startup_trace->str);
+    g_error ("The run did not finish: %s", startup_trace->str);
   *error = g_steal_pointer (&io.error);
   command_session_end (dev);
   return g_string_free (g_steal_pointer (&startup_trace), FALSE);
+}
+
+/* Runs open on a 533c up to its OTP read; see run_wrapped(). */
+static gchar *
+run_wrapped_open (const WrappedOpen *sensor, GError **error)
+{
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+
+  return run_wrapped (dev, fpi_ssm_new_full (dev, goodix_open_ssm_handler,
+                                             GOODIX_OPEN_READ_OTP, GOODIX_OPEN_READ_OTP,
+                                             "wrapped-open"),
+                      sensor, error);
 }
 
 /* 533c opens in the vendor's order: wake with a four-byte NOP, read the
@@ -639,6 +655,7 @@ test_wrapped_ack_reports_config_loss (void)
 
   receive_message (dev, 0xb, 0, lost, sizeof (lost));
   g_assert_true (self->config_lost);
+  g_assert_true (self->psk_refresh_pending);
   receive_message (dev, 0x9, 0, config_reply, sizeof (config_reply));
   g_assert_false (self->config_lost);
   g_clear_object (&action_cancel_token);
@@ -757,6 +774,44 @@ test_wrapped_ec_on_payload (void)
   g_assert_cmpmem (g_bytes_get_data (direct_payload, NULL), 3, direct, 3);
 }
 
+/* Returns the commands one TLS handshake attempt writes on a 533c answering
+ * as @sensor, which has reported a power loss when @power_lost is set, with
+ * the attempt's error in @error. */
+static gchar *
+tls_attempt_trace (const WrappedOpen *sensor, gboolean power_lost, GError **error)
+{
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+
+  FPI_DEVICE_GOODIX53X5 (dev)->psk_refresh_pending = power_lost;
+  return run_wrapped (dev, goodix_tls_attempt_new (dev), sensor, error);
+}
+
+/* A 533c that lost power takes no handshake until its PSK is read again, so
+ * after such a report the attempt reads and checks the PSK hash first, as the
+ * vendor's PSK refresh does; otherwise it starts with the TLS request. */
+static void
+test_wrapped_power_loss_refreshes_psk (void)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
+  const WrappedOpen foreign = { .firmware = "GF5288_GM168SEC_APP_13016",
+                                .foreign_psk = TRUE };
+  g_autoptr(GError) refreshed_error = NULL;
+  g_autoptr(GError) plain_error = NULL;
+  g_autoptr(GError) foreign_error = NULL;
+  g_autofree gchar *refreshed = tls_attempt_trace (&sensor, TRUE, &refreshed_error);
+  g_autofree gchar *plain = tls_attempt_trace (&sensor, FALSE, &plain_error);
+  g_autofree gchar *refused = tls_attempt_trace (&foreign, TRUE, &foreign_error);
+
+  /* The simulated sensor sends no ClientHello, so each attempt ends there. */
+  g_assert_cmpstr (refreshed, ==, "e4,(16:20),d0,(2:00),");
+  g_assert_error (refreshed_error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT);
+  g_assert_cmpstr (plain, ==, "d0,(2:00),");
+  g_assert_error (plain_error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT);
+  /* A PSK changed while the sensor was off stops the handshake before it. */
+  g_assert_cmpstr (refused, ==, "e4,(16:20),");
+  g_assert_error (foreign_error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID);
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -787,6 +842,8 @@ register_wrapped_tests (void)
                    test_wrapped_ack_reports_config_loss);
   g_test_add_func ("/goodix53x5/wrapped/command-budgets", test_wrapped_command_budgets);
   g_test_add_func ("/goodix53x5/wrapped/ec-on-payload", test_wrapped_ec_on_payload);
+  g_test_add_func ("/goodix53x5/wrapped/power-loss-refreshes-psk",
+                   test_wrapped_power_loss_refreshes_psk);
   g_test_add_func ("/goodix53x5/wrapped/d0-requests-reconnect",
                    test_wrapped_d0_requests_reconnect);
 }

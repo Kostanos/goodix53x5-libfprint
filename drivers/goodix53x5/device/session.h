@@ -77,6 +77,11 @@ void goodix_session_close (FpDevice *dev);
  * admission. Only foreground/open callers use libfprint's action token. */
 GCancellable *goodix_session_io_cancellable (FpDevice *dev);
 
+/* Checks that the PSK hash the sensor just returned is the hash of the PSK
+ * this driver holds. Fails when the reply does not parse or the hash differs,
+ * which a sensor the driver never provisions cannot recover from. */
+gboolean goodix_require_current_psk (FpDevice *dev, GError **error);
+
 /* Every hardware owner reports here when it stops; the session then starts
  * the pending action, the requested reader join, or idle maintenance. */
 void goodix_session_settle (FpDevice *dev);

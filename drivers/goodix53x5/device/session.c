@@ -914,23 +914,41 @@ goodix_psk_hash_is_current (FpiDeviceGoodix53x5 *self, const guint8 *hash, gsize
   return len >= sizeof (expected) && memcmp (hash, expected, sizeof (expected)) == 0;
 }
 
-/* Checks whether the PSK hash the sensor just returned is the hash of the
- * PSK this driver holds, setting @matches. Returns FALSE, failing @ssm, when
- * the reply does not parse. */
+static GError *
+goodix_psk_mismatch_error (void)
+{
+  return fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                   "Sensor PSK does not match, and this sensor is never provisioned");
+}
+
+/* Sets @matches to whether the PSK hash the sensor just returned is the hash
+ * of the PSK this driver holds. Fails when the reply does not parse. */
 static gboolean
-goodix_open_psk_hash_matches (FpiSsm *ssm, FpDevice *dev, gboolean *matches)
+goodix_psk_hash_reply_matches (FpDevice *dev, gboolean *matches, GError **error)
 {
   const guint8 *hash;
   gsize hash_len;
 
   if (!goodix_cmd_parse_psk_hash_reply (dev, &hash, &hash_len))
     {
-      fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                          "Failed to read PSK hash"));
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "Failed to read PSK hash");
       return FALSE;
     }
   *matches = goodix_psk_hash_is_current (FPI_DEVICE_GOODIX53X5 (dev), hash, hash_len);
   return TRUE;
+}
+
+gboolean
+goodix_require_current_psk (FpDevice *dev, GError **error)
+{
+  gboolean matches;
+
+  if (!goodix_psk_hash_reply_matches (dev, &matches, error))
+    return FALSE;
+  if (!matches)
+    g_propagate_error (error, goodix_psk_mismatch_error ());
+  return matches;
 }
 
 static void
@@ -1012,14 +1030,10 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_EARLY_PSK_CHECK:
       {
-        gboolean matches;
+        GError *error = NULL;
 
-        if (!goodix_open_psk_hash_matches (ssm, dev, &matches))
-          return;
-        if (!matches)
-          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
-                                 FP_DEVICE_ERROR_DATA_INVALID,
-                                 "Sensor PSK does not match, and this sensor is never provisioned"));
+        if (!goodix_require_current_psk (dev, &error))
+          fpi_ssm_mark_failed (ssm, error);
         else
           fpi_ssm_next_state (ssm);
       }
@@ -1095,9 +1109,13 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
     case GOODIX_OPEN_WRITE_PSK:
       {
         gboolean matches;
+        GError *error = NULL;
 
-        if (!goodix_open_psk_hash_matches (ssm, dev, &matches))
-          return;
+        if (!goodix_psk_hash_reply_matches (dev, &matches, &error))
+          {
+            fpi_ssm_mark_failed (ssm, error);
+            return;
+          }
         if (matches)
           {
             fp_dbg ("PSK hash matches, no need to write");
@@ -1108,10 +1126,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
         if (!goodix_variant (self)->provisionable)
           {
-            fpi_ssm_mark_failed (
-              ssm,
-              fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
-                                        "Sensor PSK does not match, and this sensor is never provisioned"));
+            fpi_ssm_mark_failed (ssm, goodix_psk_mismatch_error ());
             return;
           }
 
@@ -1163,19 +1178,18 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       {
         if (self->psk_write_verify_pending)
           {
-            /* Parse the re-read PSK hash from the previous state */
-            const guint8 *psk_data;
-            gsize psk_data_len;
+            /* The previous state re-read the hash of the PSK just written. */
+            gboolean matches;
+            GError *error = NULL;
 
-            if (!goodix_cmd_parse_psk_hash_reply (dev, &psk_data, &psk_data_len))
+            if (!goodix_psk_hash_reply_matches (dev, &matches, &error))
               {
-                fpi_ssm_mark_failed (ssm,
-                                     fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                               "Failed to re-read PSK hash"));
+                g_prefix_error (&error, "After the PSK write: ");
+                fpi_ssm_mark_failed (ssm, error);
                 return;
               }
 
-            if (!goodix_psk_hash_is_current (self, psk_data, psk_data_len))
+            if (!matches)
               {
                 fpi_ssm_mark_failed (ssm,
                                      fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,

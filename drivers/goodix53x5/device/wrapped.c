@@ -242,6 +242,8 @@ goodix_read_psk_hash_wrapped (FpiSsm *ssm, FpDevice *dev)
 }
 
 typedef enum {
+  GOODIX_TLS_PSK_REFRESH,
+  GOODIX_TLS_PSK_CHECK,
   GOODIX_TLS_REQUEST,
   GOODIX_TLS_RECV,
   GOODIX_TLS_STEP,
@@ -249,9 +251,10 @@ typedef enum {
   GOODIX_TLS_NUM_STATES,
 } GoodixTlsState;
 
-/* Runs one TLS handshake attempt, the sensor being the client; fails when it
- * sends a record OpenSSL rejects, a reply takes over 2 s, or the handshake
- * runs out of steps. */
+/* Runs one TLS handshake attempt, the sensor being the client, reading the
+ * PSK hash first when the sensor reported a power loss. Fails when the hash is
+ * not this driver's, the sensor sends a record OpenSSL rejects, a reply takes
+ * over 2 s, or the handshake runs out of steps. */
 static void
 goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 {
@@ -266,6 +269,23 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 
   switch ((GoodixTlsState) fpi_ssm_get_cur_state (ssm))
     {
+    case GOODIX_TLS_PSK_REFRESH:
+      if (!self->psk_refresh_pending)
+        fpi_ssm_jump_to_state (ssm, GOODIX_TLS_REQUEST);
+      else
+        goodix_read_psk_hash_wrapped (ssm, dev);
+      break;
+
+    case GOODIX_TLS_PSK_CHECK:
+      if (!goodix_require_current_psk (dev, &error))
+        {
+          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+          return;
+        }
+      self->psk_refresh_pending = FALSE;
+      fpi_ssm_next_state (ssm);
+      break;
+
     case GOODIX_TLS_REQUEST:
       goodix_transport_reset_mcu (dev);
       g_clear_pointer (&self->tls, goodix_tls_free);

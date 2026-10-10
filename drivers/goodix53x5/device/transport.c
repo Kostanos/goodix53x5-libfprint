@@ -803,7 +803,12 @@ goodix_rx_cell (GoodixTransport *operation,
         self->transport->ack_status = payload[1];
       if (ack_packet && (payload[1] & GOODIX_PROTO_ACK_FLAG_CONFIG_LOST) &&
           goodix_variant (self)->ack_reports_config_loss)
-        self->config_lost = TRUE;
+        {
+          if (!self->config_lost)
+            fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
+          self->config_lost = TRUE;
+          self->psk_refresh_pending = TRUE;
+        }
 
       if (self->reply_valid)
         {
@@ -1322,6 +1327,7 @@ goodix_transport_invalidate (FpDevice *dev)
   self->image_error_history = FALSE;
   self->gtls_restart_pending = FALSE;
   self->reconnect_requested = FALSE;
+  self->psk_refresh_pending = FALSE;
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
