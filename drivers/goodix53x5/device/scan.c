@@ -307,18 +307,21 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
 static void
 goodix_scan_restarted_before_arm (FpDevice *dev, GError *error, gpointer user_data)
 {
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *ssm = user_data;
+  gboolean reconnect = self->reconnect_requested;
 
+  self->reconnect_requested = FALSE;
   if (error)
     fpi_ssm_mark_failed (ssm, error);
   else
-    fpi_ssm_jump_to_state (ssm, fpi_ssm_get_cur_state (ssm));
+    fpi_ssm_jump_to_state (ssm, reconnect &&
+                          fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_RECOVERY_ARM_UP ?
+                          GOODIX_SCAN_COORD_CHANNEL_REARM : fpi_ssm_get_cur_state (ssm));
 }
 
-/* Returns TRUE after starting the pending channel restart, on a variant whose
- * restart drops the finger-detect arm; @ssm re-enters its arming state when
- * the restart ends, or fails with its error. The vendor restarts at the
- * failed read, so the capture-failure arm lands on the new session. */
+/* Serialize a pending restart before arming on the replacement session.
+ * D0 selects its own down-arm; a failed read keeps the capture continuation. */
 static gboolean
 goodix_scan_restart_before_arm (FpiSsm *ssm, FpDevice *dev)
 {
