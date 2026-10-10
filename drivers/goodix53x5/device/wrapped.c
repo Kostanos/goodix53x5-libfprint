@@ -363,6 +363,7 @@ const GoodixVariant goodix_variant_wrapped = {
   .restart_on_first_image_error = TRUE,
   .ack_reports_config_loss = TRUE,
   .replies_match_command = TRUE,
+  .channel_restart_disarms = TRUE,
   /* Start makes one TLS call and one retry; StartTlsThread, after a failed
    * read, makes one; LogicEvtTlsConn makes at most two. */
   .channel_attempts = 2,

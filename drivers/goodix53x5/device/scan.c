@@ -297,7 +297,7 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
     }
   /* Only a reconnect the sensor asked for arms afterwards, as the vendor's
    * handler does. A restart after a failed image read only restarts the
-   * channel: that capture's own failure path armed again. */
+   * channel: the capture's failure path arms after it. */
   if (FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested && !data->stop_requested)
     {
       data->dispatching = TRUE;
@@ -305,6 +305,32 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
       return;
     }
   fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+}
+
+static void
+goodix_scan_restarted_before_arm (FpDevice *dev, GError *error, gpointer user_data)
+{
+  FpiSsm *ssm = user_data;
+
+  if (error)
+    fpi_ssm_mark_failed (ssm, error);
+  else
+    fpi_ssm_jump_to_state (ssm, fpi_ssm_get_cur_state (ssm));
+}
+
+/* Runs a channel restart still pending, then enters the current arming state
+ * again, on a variant whose restart drops the arm; returns TRUE if it did.
+ * The vendor restarts as soon as a read fails, so the arm of the capture's
+ * failure path, which comes later, lands on the new session. */
+static gboolean
+goodix_scan_restart_before_arm (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (!self->gtls_restart_pending || !goodix_variant (self)->channel_restart_disarms)
+    return FALSE;
+  goodix_start_gtls_restart (dev, goodix_scan_restarted_before_arm, ssm);
+  return TRUE;
 }
 
 static void
@@ -514,6 +540,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_ARM_DOWN:
+      if (goodix_scan_restart_before_arm (ssm, dev))
+        return;
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
       goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
       break;
@@ -756,6 +784,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
     case GOODIX_SCAN_COORD_RECOVERY_ARM_UP:
       data->dispatching = TRUE;
+      if (goodix_scan_restart_before_arm (ssm, dev))
+        return;
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_UP;
       goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
       break;
@@ -779,6 +809,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_REARM_DOWN:
+      if (goodix_scan_restart_before_arm (ssm, dev))
+        return;
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
       goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
       break;

@@ -1215,6 +1215,7 @@ const GoodixVariant goodix_variant_direct = {
   .restart_on_first_image_error = FALSE,
   .ack_reports_config_loss = FALSE,
   .replies_match_command = FALSE,
+  .channel_restart_disarms = FALSE,
   /* deviceInit runs the three-attempt wrapper twice; the event restart once. */
   .channel_attempts = 6,
   .channel_restart_attempts = 3,

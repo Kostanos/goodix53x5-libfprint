@@ -65,6 +65,9 @@ typedef struct
    * command that expects data: the wait moves on to the data, as the
    * vendor's _IoHubExec does. FALSE retries the command. */
   gboolean    ack_timeout_waits_for_data;
+  /* TRUE where starting a new secure-channel session drops the
+   * finger-detect arm, so a restart still pending runs before an arm. */
+  gboolean    channel_restart_disarms;
   /* Handshake attempts open and resume make before failing. */
   guint       channel_attempts;
   /* Handshake attempts a restart after a failed image read makes. */

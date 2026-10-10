@@ -1119,6 +1119,45 @@ test_wrapped_tls_attempts (void)
 }
 
 static void
+arm_after_restart_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  if (goodix_scan_restart_before_arm (ssm, dev))
+    return;
+  g_string_append (startup_trace, "arm,");
+  fpi_ssm_mark_completed (ssm);
+}
+
+/* Returns what a 533c writes to arm finger detection, with a channel
+ * restart pending when @restart_pending is set. */
+static gchar *
+arm_trace (gboolean restart_pending)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(GError) error = NULL;
+  gchar *trace;
+
+  FPI_DEVICE_GOODIX53X5 (dev)->gtls_restart_pending = restart_pending;
+  trace = run_wrapped (dev, fpi_ssm_new (dev, arm_after_restart_handler, 1), &sensor, &error);
+  g_assert_no_error (error);
+  return trace;
+}
+
+/* A 533c restart drops the finger-detect arm, so one still pending, as after
+ * a failed image read, runs before the scan arms again, not after. */
+static void
+test_wrapped_restart_before_arm (void)
+{
+  g_autofree gchar *pending = arm_trace (TRUE);
+  g_autofree gchar *plain = arm_trace (FALSE);
+
+  /* The simulated sensor sends no ClientHello; the restart gives up and the
+   * arm follows anyway. */
+  g_assert_cmpstr (pending, ==, "d0,(2:00),arm,");
+  g_assert_cmpstr (plain, ==, "arm,");
+}
+
+static void
 register_wrapped_tests (void)
 {
   g_test_add_func ("/goodix53x5/wrapped/pack-header", test_wrapped_pack_header);
@@ -1132,6 +1171,7 @@ register_wrapped_tests (void)
                    test_wrapped_join_and_reset_drop_stream);
   g_test_add_func ("/goodix53x5/wrapped/restart-rearm-yields-to-stop",
                    test_wrapped_restart_rearm_yields_to_stop);
+  g_test_add_func ("/goodix53x5/wrapped/restart-before-arm", test_wrapped_restart_before_arm);
   g_test_add_func ("/goodix53x5/wrapped/tls-truncated-record",
                    test_wrapped_tls_truncated_record);
   g_test_add_func ("/goodix53x5/wrapped/tls-handshake-limit",
