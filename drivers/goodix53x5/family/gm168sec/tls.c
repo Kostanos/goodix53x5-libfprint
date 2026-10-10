@@ -39,8 +39,7 @@ goodix_tls_psk_cb (SSL *ssl, const char *identity, unsigned char *psk,
 {
   GoodixTls *tls = SSL_get_app_data (ssl);
 
-  /* The sensor's PSK identity is not checked, as openssl s_server does not. */
-  if (tls->psk_len > max_psk_len)
+  if (g_strcmp0 (identity, "Client_identity") != 0 || tls->psk_len > max_psk_len)
     return 0;
   memcpy (psk, tls->psk, tls->psk_len);
   return tls->psk_len;
