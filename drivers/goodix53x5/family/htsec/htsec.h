@@ -23,3 +23,7 @@ FpiSsm *goodix_gtls_attempt_new (FpDevice *dev);
 GoodixFrameStatus goodix_decrypt_frame_gtls (FpiDeviceGoodix53x5 *self,
                                              const guint8 *payload, gsize len,
                                              guint8 **out, gsize *out_len);
+/* Counts an undecodable frame; TRUE at every second one. */
+gboolean goodix_gtls_image_error (FpiDeviceGoodix53x5 *self);
+/* Wipes the GTLS session's copy of the PSK. */
+void     goodix_gtls_discard (FpiDeviceGoodix53x5 *self);

@@ -18,6 +18,7 @@
 #include "family/htsec/htsec.h"
 
 #include <string.h>
+#include <openssl/crypto.h>
 #include <openssl/rand.h>
 
 typedef enum {
@@ -137,4 +138,24 @@ goodix_decrypt_frame_gtls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
     return GOODIX_FRAME_DECRYPTED;
   return self->gtls.hmac_server_counter != counter && self->gtls.state == 5 ?
          GOODIX_FRAME_REJECTED_IN_SESSION : GOODIX_FRAME_REJECTED;
+}
+
+/* Restarts the session at every second undecodable frame. Successful frames
+ * do not clear the history. */
+gboolean
+goodix_gtls_image_error (FpiDeviceGoodix53x5 *self)
+{
+  if (!self->image_error_history)
+    {
+      self->image_error_history = TRUE;
+      return FALSE;
+    }
+  self->image_error_history = FALSE;
+  return TRUE;
+}
+
+void
+goodix_gtls_discard (FpiDeviceGoodix53x5 *self)
+{
+  OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
 }

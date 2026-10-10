@@ -35,6 +35,8 @@ typedef struct
    * goodix_rx_cell(), goodix_rx_image() and goodix_mcu_publish(). */
   void    (*receive) (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
                       const guint8 *data, gsize len);
+  /* Drops any partial frame kept between transfers; NULL where none is. */
+  void    (*discard) (FpiDeviceGoodix53x5 *self);
 } GoodixLink;
 
 /* What a message from the sensor means beyond being a reply. */
@@ -113,12 +115,15 @@ typedef struct
   GoodixFrameStatus   (*decrypt_frame) (FpiDeviceGoodix53x5 *self,
                                         const guint8 *payload, gsize len,
                                         guint8 **out, gsize *out_len);
-  /* TRUE where one undecodable image restarts the secure channel, as an
-   * OpenSSL session is dead after a failed record; GTLS waits for a second. */
-  gboolean              restart_on_first_image_error;
+  /* Counts one undecodable frame; returns TRUE when the channel must be
+   * restarted for it. */
+  gboolean            (*image_error) (FpiDeviceGoodix53x5 *self);
   /* TRUE where starting a new session drops the finger-detect arm, so a
    * restart still pending runs before an arm. */
   gboolean              restart_disarms;
+  /* Forgets the session and its keys when the device closes; NULL where
+   * the channel keeps nothing beyond the shared PSK. */
+  void                (*discard) (FpiDeviceGoodix53x5 *self);
 } GoodixChannel;
 
 /* One sensor family: the same GF5288 sensor and pipeline behind its own MCU

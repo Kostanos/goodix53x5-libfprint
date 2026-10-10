@@ -1051,19 +1051,13 @@ receive_more:
   goodix_rx_continue (operation);
 }
 
-/* Requests a secure-channel restart at every second undecodable frame, or
- * at every one where the family restarts on the first. Successful frames
- * do not clear the history, and an error during a restart still consumes it. */
+/* Requests a secure-channel restart when the family's channel needs one for
+ * an undecodable frame. An error during a restart still counts. */
 static void
 goodix_count_image_error (FpiDeviceGoodix53x5 *self)
 {
-  if (!goodix_family (self)->channel.restart_on_first_image_error &&
-      !self->image_error_history)
-    {
-      self->image_error_history = TRUE;
-      return;
-    }
-  self->image_error_history = FALSE;
+  if (!goodix_family (self)->channel.image_error (self))
+    return;
   if (!self->gtls_restart_active)
     self->gtls_restart_pending = TRUE;
 }
@@ -1124,12 +1118,14 @@ goodix_rx_image (GoodixTransport *operation, const guint8 *payload, gsize len)
   return FALSE;
 }
 
-/* Drops the partial wrapped pack kept for the next transfer, if any. */
+/* Drops the partial frame the family's link keeps for the next transfer. */
 static void
-goodix_drop_pack_stream (FpiDeviceGoodix53x5 *self)
+goodix_link_discard (FpiDeviceGoodix53x5 *self)
 {
-  if (self->pack_rx)
-    g_byte_array_set_size (self->pack_rx, 0);
+  const GoodixLink *link = &goodix_family (self)->link;
+
+  if (link->discard)
+    link->discard (self);
 }
 
 static void
@@ -1143,7 +1139,7 @@ goodix_reader_joined (GoodixReader *reader)
   g_assert (!reader->pending);
   self->reader = NULL;
   /* The next reader starts a new stream: a partial pack cannot continue. */
-  goodix_drop_pack_stream (self);
+  goodix_link_discard (self);
   g_clear_object (&reader->cancel);
   g_clear_error (&reader->error);
   g_free (reader);
@@ -1203,7 +1199,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       reader->error = error;
       self->needs_reinit = TRUE;
       /* The lost transfer leaves no way to find the next pack header. */
-      goodix_drop_pack_stream (self);
+      goodix_link_discard (self);
       if (operation != &idle)
         goodix_transport_complete (operation, g_error_copy (error));
       return;
@@ -1257,7 +1253,7 @@ goodix_transport_reset_mcu (FpDevice *dev)
   g_clear_pointer (&self->mcu_reply, g_bytes_unref);
   self->reply_valid = FALSE;
   /* A pack cut short by the previous channel never completes. */
-  goodix_drop_pack_stream (self);
+  goodix_link_discard (self);
   /* The native attempt resets ring indices, not the auto-reset event. */
 }
 
@@ -1281,7 +1277,7 @@ goodix_transport_invalidate (FpDevice *dev)
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
-  goodix_drop_pack_stream (self);
+  goodix_link_discard (self);
   self->reply_valid = FALSE;
   self->rx_idle_partial = FALSE;
   self->pending_fdt.event.pending = FALSE;

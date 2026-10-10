@@ -31,3 +31,9 @@ FpiSsm *goodix_tls_attempt_new (FpDevice *dev);
 GoodixFrameStatus goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self,
                                             const guint8 *payload, gsize len,
                                             guint8 **out, gsize *out_len);
+/* Counts an undecodable frame; always TRUE. */
+gboolean goodix_tls_image_error (FpiDeviceGoodix53x5 *self);
+/* Frees the TLS session. */
+void     goodix_tls_discard (FpiDeviceGoodix53x5 *self);
+/* Drops the receive stream and any partial pack in it. */
+void     goodix_drop_pack_stream (FpiDeviceGoodix53x5 *self);

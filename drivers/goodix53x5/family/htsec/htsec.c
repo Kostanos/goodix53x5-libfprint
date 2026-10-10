@@ -124,6 +124,7 @@ const GoodixFamily goodix_family_htsec = {
     .frame = goodix_frame_direct,
     .frame_record = NULL,
     .receive = goodix_receive_direct,
+    .discard = NULL,
   },
   .protocol = {
     .wake_payload_len = 2,
@@ -141,8 +142,9 @@ const GoodixFamily goodix_family_htsec = {
     .attempts = { .open = 6, .after_failed_read = 3, .reconnect = 3 },
     .attempt_new = goodix_gtls_attempt_new,
     .decrypt_frame = goodix_decrypt_frame_gtls,
-    .restart_on_first_image_error = FALSE,
+    .image_error = goodix_gtls_image_error,
     .restart_disarms = FALSE,
+    .discard = goodix_gtls_discard,
   },
   .open_new = goodix_htsec_open_new,
 };

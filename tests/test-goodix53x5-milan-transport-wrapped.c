@@ -109,7 +109,7 @@ test_wrapped_reader_error_drops_stream (void)
   self->reader = reader;
   goodix_rx_cb (NULL, dev, reader,
                 g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO, "Lost"));
-  g_assert_cmpuint (self->pack_rx->len, ==, 0);
+  g_assert_null (self->pack_rx);
 
   self->reader = NULL;
   g_clear_error (&reader->error);
@@ -140,11 +140,11 @@ test_wrapped_join_and_reset_drop_stream (void)
   self->reader->dev = g_object_ref (dev);
   goodix_transport_quiesce (dev, count_join, &joins);
   g_assert_cmpuint (joins, ==, 1);
-  g_assert_cmpuint (self->pack_rx->len, ==, 0);
+  g_assert_null (self->pack_rx);
 
   goodix_receive_wrapped (self, &idle, partial, sizeof (partial));
   goodix_transport_reset_mcu (dev);
-  g_assert_cmpuint (self->pack_rx->len, ==, 0);
+  g_assert_null (self->pack_rx);
   g_clear_object (&action_cancel_token);
 }
 

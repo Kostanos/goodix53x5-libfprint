@@ -140,6 +140,13 @@ goodix_rx_pack (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
     }
 }
 
+/* Drops the partial pack kept for the next transfer, if any. */
+void
+goodix_drop_pack_stream (FpiDeviceGoodix53x5 *self)
+{
+  g_clear_pointer (&self->pack_rx, g_byte_array_unref);
+}
+
 /* Dispatches every complete pack once @data is appended to the stream,
  * keeping a partial one for the next transfer; drops the stream at a bad
  * header. A pack never starts with zero, so its write padding is skipped. */
@@ -286,6 +293,7 @@ const GoodixFamily goodix_family_gm168sec = {
     .frame = goodix_frame_wrapped,
     .frame_record = goodix_frame_tls_record,
     .receive = goodix_receive_wrapped,
+    .discard = goodix_drop_pack_stream,
   },
   .protocol = {
     .wake_payload_len = 4,
@@ -306,8 +314,9 @@ const GoodixFamily goodix_family_gm168sec = {
     .attempts = { .open = 2, .after_failed_read = 1, .reconnect = 2 },
     .attempt_new = goodix_tls_attempt_new,
     .decrypt_frame = goodix_decrypt_frame_tls,
-    .restart_on_first_image_error = TRUE,
+    .image_error = goodix_tls_image_error,
     .restart_disarms = TRUE,
+    .discard = goodix_tls_discard,
   },
   .open_new = goodix_gm168sec_open_new,
 };

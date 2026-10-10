@@ -185,3 +185,18 @@ goodix_tls_attempt_new (FpDevice *dev)
 {
   return fpi_ssm_new (dev, goodix_tls_ssm_handler, GOODIX_TLS_NUM_STATES);
 }
+
+/* An OpenSSL session is dead after a failed record, so every undecodable
+ * frame restarts it. */
+gboolean
+goodix_tls_image_error (FpiDeviceGoodix53x5 *self)
+{
+  (void) self;
+  return TRUE;
+}
+
+void
+goodix_tls_discard (FpiDeviceGoodix53x5 *self)
+{
+  g_clear_pointer (&self->tls, goodix_tls_free);
+}

@@ -142,10 +142,11 @@ struct _FpiDeviceGoodix53x5
   void (*service_joined) (FpDevice *dev, gpointer data);
   gpointer service_joined_data;
 
-  /* Wrapped receive stream, reassembled into whole packs across transfers. */
+  /* Owned by the GM168SEC link: its receive stream, reassembled into whole
+   * packs across transfers. */
   GByteArray   *pack_rx;
-  /* The TLS session wrapped sensors' images are decrypted through, replaced
-   * at every handshake; GTLS sensors use gtls instead. */
+  /* Owned by the GM168SEC channel: the TLS session images are decrypted
+   * through, replaced at every handshake. HTSEC sensors use gtls instead. */
   GoodixTls    *tls;
 
   /* GTLS session (persists across captures) */

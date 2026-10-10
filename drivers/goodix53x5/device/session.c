@@ -30,7 +30,6 @@
 #include "device/session.h"
 #include "device/auth.h"
 #include "device/enroll.h"
-#include "family/gm168sec/tls.h"
 
 #include <string.h>
 #include <openssl/crypto.h>
@@ -1039,6 +1038,16 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
     }
 }
 
+/* Forgets the channel's session and keys, where it keeps any. */
+static void
+goodix_channel_discard (FpiDeviceGoodix53x5 *self)
+{
+  const GoodixChannel *channel = &goodix_family (self)->channel;
+
+  if (channel->discard)
+    channel->discard (self);
+}
+
 static void
 goodix_cleanup_failed_open (FpDevice *dev)
 {
@@ -1089,8 +1098,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       self->hardware_refresh_pending = FALSE;
       goodix_milan_persistence_clear (dev);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
-      OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
-      g_clear_pointer (&self->tls, goodix_tls_free);
+      goodix_channel_discard (self);
       self->psk_imported = FALSE;
       goodix_debug_timing_open_done (self, dev, error->message);
       fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
@@ -1281,8 +1289,7 @@ goodix_session_close_joined (FpDevice *dev, gpointer data)
   goodix_milan_persistence_clear (dev);
   g_clear_error (&self->pending_enroll_error);
   OPENSSL_cleanse (self->psk, sizeof (self->psk));
-  OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
-  g_clear_pointer (&self->tls, goodix_tls_free);
+  goodix_channel_discard (self);
   self->psk_imported = FALSE;
 
   g_usb_device_release_interface (fpi_device_get_usb_device (dev),
