@@ -51,6 +51,7 @@ typedef enum {
   GOODIX_SCAN_COORD_REARM_DOWN,
   GOODIX_SCAN_COORD_REARM_DOWN_DONE,
   GOODIX_SCAN_COORD_RESTORE_CONFIG,
+  GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG,
   GOODIX_SCAN_COORD_ESD,
   GOODIX_SCAN_COORD_ESD_DONE,
   GOODIX_SCAN_COORD_CHANNEL_REARM,
@@ -87,6 +88,9 @@ typedef struct
   gboolean                       cpu_outstanding;
   gboolean                       refresh_deferred;
   gboolean                       cycle_active;
+  /* A download for the configuration the sensor reported lost failed; the
+   * next one waits for the next finger event rather than looping. */
+  gboolean                       lost_config_tried;
   gboolean                       recovering_generation;
   gboolean                       release_settled;
   gboolean                       idle;
@@ -319,6 +323,12 @@ goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
       goodix_start_gtls_restart (dev, goodix_scan_gtls_restarted, data);
       return;
     }
+  if (!error && self->config_lost && !self->pending_fdt.event.pending)
+    {
+      /* Woken by a configuration loss: restore it before waiting again. */
+      fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+      return;
+    }
   if (!error)
     {
       /* Selected work must still dispatch if its packet won cancellation. */
@@ -381,6 +391,26 @@ goodix_scan_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
     }
   g_clear_error (&error);
   fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REARM_DOWN);
+}
+
+/* The vendor's power-lost handler downloads the configuration and arms
+ * nothing, so the scan goes back to waiting. */
+static void
+goodix_scan_lost_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                                  gboolean native_zero, GError *error)
+{
+  GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
+
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  if (error)
+    fp_warn ("Restoring the lost configuration failed: %s", error->message);
+  g_clear_error (&error);
+  data->dispatching = FALSE;
+  fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
 }
 
 static void
@@ -500,12 +530,11 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             goodix_scan_maybe_finish_requested (data);
             return;
           }
-        if (self->config_lost && !data->stop_requested)
+        if (self->config_lost && !data->lost_config_tried && !data->stop_requested)
           {
-            /* One download per report, as the vendor's power-lost handler
-             * makes: a failed one is not retried in a loop. */
-            self->config_lost = FALSE;
-            fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RESTORE_CONFIG);
+            data->lost_config_tried = TRUE;
+            data->dispatching = TRUE;
+            fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG);
             return;
           }
         /* A pending notification can complete synchronously and free data.
@@ -530,6 +559,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             return;
           }
         data->dispatching = TRUE;
+        data->lost_config_tried = FALSE;
 
         if (data->event_type == GOODIX_FDT_EVENT_ESD)
           {
@@ -797,6 +827,10 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
     case GOODIX_SCAN_COORD_RESTORE_CONFIG:
       goodix_cmd_restore_config (ssm, dev, goodix_scan_config_restored);
+      break;
+
+    case GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG:
+      goodix_cmd_restore_config (ssm, dev, goodix_scan_lost_config_restored);
       break;
 
     case GOODIX_SCAN_COORD_ESD:

@@ -782,8 +782,9 @@ receive_message (FpDevice *dev, guint8 category, guint8 command,
       goodix_rx_cell (&idle, message + offset, MIN (GOODIX_USB_CHUNK_SIZE, message_len - offset));
 }
 
-/* On 533c an ACK with flag 0x02, for any command, reports lost configuration
- * until a configuration reply arrives; 53x5 ACKs never report it. */
+/* On 533c an ACK with flag 0x02, for any command, reports lost
+ * configuration; a configuration reply that no download asked for does not
+ * restore it. 53x5 ACKs never report it. */
 static void
 test_wrapped_ack_reports_config_loss (void)
 {
@@ -797,13 +798,132 @@ test_wrapped_ack_reports_config_loss (void)
   g_assert_true (self->config_lost);
   g_assert_true (self->psk_refresh_pending);
   receive_message (dev, 0x9, 0, config_reply, sizeof (config_reply));
-  g_assert_false (self->config_lost);
+  g_assert_true (self->config_lost);
   g_clear_object (&action_cancel_token);
 
   direct = fixture_device_new ();
   receive_message (direct, 0xb, 0, lost, sizeof (lost));
   g_assert_false (FPI_DEVICE_GOODIX53X5 (direct)->config_lost);
   g_clear_object (&action_cancel_token);
+}
+
+static void
+upload_config_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  goodix_cmd_restore_config (ssm, dev, NULL);
+}
+
+/* Returns whether a 533c that reported lost configuration still holds that
+ * report after a configuration download whose reply comes when @answered. */
+static gboolean
+config_lost_after_download (gboolean answered)
+{
+  const guint8 config_reply[1] = { 1 };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gboolean lost;
+
+  command_session_begin (dev);
+  self->config_lost = TRUE;
+  fpi_ssm_start (fpi_ssm_new (dev, upload_config_handler, 1), startup_done);
+  fixture_complete (NULL);
+  ack_reply (usb.pending, 0x90);
+  fixture_complete (NULL);
+  if (answered)
+    {
+      reply (usb.pending, 0x9, 0, config_reply, sizeof (config_reply));
+      fixture_complete (NULL);
+    }
+  else
+    {
+      /* The download is sent once more after its first wait runs out. */
+      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                             "No reply"));
+      fixture_complete (NULL);
+      ack_reply (usb.pending, 0x90);
+      fixture_complete (NULL);
+      fixture_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                             "No reply"));
+    }
+  g_assert_cmpuint (io.completions, ==, 1);
+  g_clear_error (&io.error);
+  lost = self->config_lost;
+  command_session_end (dev);
+  return lost;
+}
+
+/* Only a configuration download that completes restores a lost one; a
+ * failed download leaves the report for the scan to act on. */
+static void
+test_wrapped_download_restores_config (void)
+{
+  g_assert_false (config_lost_after_download (TRUE));
+  g_assert_true (config_lost_after_download (FALSE));
+}
+
+static void
+count_event (FpDevice *dev, const GoodixTransportResult *result, GError *error,
+             gpointer data)
+{
+  g_assert_no_error (error);
+  (*(guint *) data)++;
+}
+
+/* A configuration loss reported while a scan waits for a finger wakes it,
+ * so it restores the configuration rather than waiting on a sensor that
+ * lost it. */
+static void
+test_wrapped_config_loss_wakes_scan (void)
+{
+  const guint8 lost[2] = { 0xae, 0x03 };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  guint woken = 0;
+
+  command_session_begin (dev);
+  goodix_transport_wait_event (dev, GOODIX_PROFILE9_FDT_WAIT_DOWN, count_event, &woken);
+  g_assert_cmpuint (woken, ==, 0);
+  reply (usb.pending, 0xb, 0, lost, sizeof (lost));
+  fixture_complete (NULL);
+  g_assert_cmpuint (woken, ==, 1);
+  g_assert_true (FPI_DEVICE_GOODIX53X5 (dev)->config_lost);
+  command_session_end (dev);
+}
+
+static int scan_state;
+
+static void
+record_scan_state (FpiSsm *ssm, FpDevice *dev)
+{
+  scan_state = fpi_ssm_get_cur_state (ssm);
+}
+
+/* The vendor's power-lost handler arms nothing: once the download of the
+ * lost configuration finished, failed or not, the scan goes back to waiting
+ * instead of arming finger-down. */
+static void
+test_wrapped_lost_config_restore_arms_nothing (void)
+{
+  for (guint failed = 0; failed < 2; failed++)
+    {
+      g_autoptr(FpDevice) dev = wrapped_device_new ();
+      GoodixScanCoordinatorData data = { .dispatching = TRUE };
+
+      data.ssm = fpi_ssm_new (dev, record_scan_state, GOODIX_SCAN_COORD_NUM_STATES);
+      fpi_ssm_set_data (data.ssm, &data, NULL);
+      fpi_ssm_start (data.ssm, NULL);
+      if (failed)
+        g_test_expect_message ("libfprint", G_LOG_LEVEL_WARNING,
+                               "Restoring the lost configuration failed*");
+      goodix_scan_lost_config_restored (
+        data.ssm, dev, 0, TRUE,
+        failed ? g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                      "No reply") : NULL);
+      g_test_assert_expected_messages ();
+      g_assert_cmpint (scan_state, ==, GOODIX_SCAN_COORD_WAIT_EVENT);
+      g_assert_false (data.dispatching);
+      fpi_ssm_free (data.ssm);
+      g_clear_object (&action_cancel_token);
+    }
 }
 
 /* Returns the ACK and data budgets @dev gives the command with wire byte
@@ -1032,6 +1152,12 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/write-guard", test_wrapped_write_guard);
   g_test_add_func ("/goodix53x5/wrapped/ack-reports-config-loss",
                    test_wrapped_ack_reports_config_loss);
+  g_test_add_func ("/goodix53x5/wrapped/download-restores-config",
+                   test_wrapped_download_restores_config);
+  g_test_add_func ("/goodix53x5/wrapped/config-loss-wakes-scan",
+                   test_wrapped_config_loss_wakes_scan);
+  g_test_add_func ("/goodix53x5/wrapped/lost-config-restore-arms-nothing",
+                   test_wrapped_lost_config_restore_arms_nothing);
   g_test_add_func ("/goodix53x5/wrapped/command-budgets", test_wrapped_command_budgets);
   g_test_add_func ("/goodix53x5/wrapped/ec-on-payload", test_wrapped_ec_on_payload);
   g_test_add_func ("/goodix53x5/wrapped/power-loss-refreshes-psk",

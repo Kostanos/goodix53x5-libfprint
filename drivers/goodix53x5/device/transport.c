@@ -688,6 +688,10 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
                       goodix_cmd_phase_name (operation->phase), operation->attempt);
     }
 
+  /* Only a download that completed restores a lost configuration. */
+  if (!error && operation->expect_data && operation->cmd.category == 9 &&
+      operation->cmd.command == 0)
+    self->config_lost = FALSE;
   self->transport = NULL;
   goodix_transport_free (operation);
   if (done)
@@ -831,6 +835,13 @@ goodix_rx_cell (GoodixTransport *operation,
             fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
           self->config_lost = TRUE;
           self->psk_refresh_pending = TRUE;
+          /* A scan waiting for a finger restores the configuration first. */
+          if (operation->phase == GOODIX_TRANSPORT_EVENT)
+            {
+              goodix_proto_rx_reset (&self->rx);
+              goodix_transport_complete (operation, NULL);
+              return;
+            }
         }
 
       if (self->reply_valid)
@@ -920,9 +931,6 @@ goodix_rx_cell (GoodixTransport *operation,
             }
           if (category == 9 && command == 2)
             self->config_response_status = payload[0];
-          /* The sensor answering a download holds a configuration again. */
-          if (category == 9)
-            self->config_lost = FALSE;
 
           /* DataFromDevice publishes these shared stores without a matching
            * command. Only A/0, A/1 and A/4 signal the version getter's event.

@@ -199,8 +199,9 @@ struct _FpiDeviceGoodix53x5
   guint16 *image_response;
   gboolean image_response_failed;
   /* Set when an ACK reports the sensor lost its configuration, on a variant
-   * whose ACKs say so; cleared by the next configuration download. The scan
-   * restores the configuration before it waits for a finger again. */
+   * whose ACKs say so; cleared by the next configuration download that
+   * completes. The scan restores the configuration before it waits for a
+   * finger again. */
   gboolean config_lost;
   /* Set when the sensor asks for a new secure channel with a D0 message, on
    * a variant that sends one; the scan's channel restart then arms
