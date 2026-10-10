@@ -72,6 +72,10 @@ typedef struct
   /* TRUE where ACK flag 0x02, on any command, means the sensor lost its
    * configuration and needs it downloaded again. */
   gboolean    ack_reports_config_loss;
+  /* TRUE where a reply in a shared response slot answers a command only if
+   * its category and command are that command's, as the vendor's
+   * IoHubNotifyDataIn checks; 53x5 native lets selectors alias. */
+  gboolean    replies_match_command;
   /* TRUE where one undecodable image restarts the secure channel, as an
    * OpenSSL session is dead after a failed record; GTLS waits for a second. */
   gboolean    restart_on_first_image_error;

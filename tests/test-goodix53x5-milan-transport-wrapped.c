@@ -606,6 +606,54 @@ test_wrapped_open_foreign_firmware (void)
   g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),");
 }
 
+static void
+reset_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  goodix_cmd_reset_sensor (ssm, dev, TRUE, NULL);
+}
+
+/* Returns how many times a reset that asked for its IRQ reply completed on
+ * @dev once its ACK and then a stale firmware-version reply arrived, which
+ * shares its response slot; then answers it properly. */
+static guint
+reset_completions_after_stale_reply (FpDevice *dev)
+{
+  static const char firmware[] = "GF5288_GM168SEC_APP_13016";
+  static const guint8 irq[4] = { 0 };
+  guint early;
+
+  command_session_begin (dev);
+  fpi_ssm_start (fpi_ssm_new (dev, reset_handler, 1), startup_done);
+  fixture_complete (NULL);
+  ack_reply (usb.pending, 0xa2);
+  fixture_complete (NULL);
+  reply (usb.pending, 0xa, 4, (const guint8 *) firmware, sizeof (firmware));
+  fixture_complete (NULL);
+  early = io.completions;
+  if (!early)
+    {
+      reply (usb.pending, 0xa, 1, irq, sizeof (irq));
+      fixture_complete (NULL);
+      g_assert_cmpuint (io.completions, ==, 1);
+    }
+  g_assert_no_error (io.error);
+  command_session_end (dev);
+  return early;
+}
+
+/* On 533c a reply completes only the command it answers, as the vendor
+ * checks; 53x5 native keeps taking any reply in the shared slot. */
+static void
+test_wrapped_reply_matches_command (void)
+{
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(FpDevice) direct = NULL;
+
+  g_assert_cmpuint (reset_completions_after_stale_reply (dev), ==, 0);
+  direct = fixture_device_new ();
+  g_assert_cmpuint (reset_completions_after_stale_reply (direct), ==, 1);
+}
+
 /* SelfCheck parses chip, platform, mode and version, so a firmware string
  * with fewer than three separators fails it even on a GM168SEC. */
 static void
@@ -922,6 +970,8 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/open-unacked-reply", test_wrapped_open_unacked_reply);
   g_test_add_func ("/goodix53x5/wrapped/open-foreign-firmware",
                    test_wrapped_open_foreign_firmware);
+  g_test_add_func ("/goodix53x5/wrapped/reply-matches-command",
+                   test_wrapped_reply_matches_command);
   g_test_add_func ("/goodix53x5/wrapped/self-check-parse", test_wrapped_self_check_parse);
   g_test_add_func ("/goodix53x5/wrapped/open-unreadable-firmware",
                    test_wrapped_open_unreadable_firmware);

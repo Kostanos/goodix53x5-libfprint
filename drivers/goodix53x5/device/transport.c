@@ -729,6 +729,23 @@ goodix_transport_ack (GoodixTransport *operation)
     }
 }
 
+/* Checks whether a reply for the shared response @slot answers some other
+ * command than the one in flight, on a variant where that matters. A stale
+ * firmware reply must not complete a reset that shares its slot. */
+static gboolean
+goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
+                         guint8 category, guint8 command)
+{
+  GoodixTransport *operation = self->transport;
+
+  return goodix_variant (self)->replies_match_command && operation && !operation->record &&
+         (operation->phase == GOODIX_TRANSPORT_SEND || operation->phase == GOODIX_TRANSPORT_ACK ||
+          operation->phase == GOODIX_TRANSPORT_RESPONSE) &&
+         (slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
+          slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION) &&
+         (category != operation->cmd.category || command != operation->cmd.command);
+}
+
 /* Requests a new secure-channel session that arms finger-down, as the
  * sensor asked; a restart already running stands for it. */
 static void
@@ -887,6 +904,14 @@ goodix_rx_cell (GoodixTransport *operation,
                             slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION ||
                             category == 0x0f;
 
+          if (goodix_reply_is_foreign (self, slot, category, command))
+            {
+              fp_dbg ("Ignoring a cat=0x%02x cmd=0x%02x reply while cat=0x%02x cmd=0x%02x waits",
+                      category, command, self->transport->cmd.category,
+                      self->transport->cmd.command);
+              goodix_proto_rx_reset (&self->rx);
+              goto receive_more;
+            }
           if ((category == 0x0f || (category == 9 && command == 2)) && !payload_len)
             {
               error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -1182,6 +1207,7 @@ const GoodixVariant goodix_variant_direct = {
   .channel_restart_disarms = FALSE,
   .restart_on_first_image_error = FALSE,
   .ack_reports_config_loss = FALSE,
+  .replies_match_command = FALSE,
   .d0_requests_reconnect = FALSE,
   .command_budget = goodix_direct_command_budget,
   .read_psk_hash = goodix_read_psk_hash_direct,

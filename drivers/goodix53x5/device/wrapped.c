@@ -361,6 +361,7 @@ const GoodixVariant goodix_variant_wrapped = {
   .channel_restart_disarms = TRUE,
   .restart_on_first_image_error = TRUE,
   .ack_reports_config_loss = TRUE,
+  .replies_match_command = TRUE,
   .d0_requests_reconnect = TRUE,
   .command_budget = goodix_wrapped_command_budget,
   .read_psk_hash = goodix_read_psk_hash_wrapped,
