@@ -248,6 +248,29 @@ goodix_read_psk_hash_wrapped (FpiSsm *ssm, FpDevice *dev)
   goodix_cmd_preset_read (ssm, dev, GOODIX_WRAPPED_PSK_HASH_TYPE, GOODIX_PSK_HASH_LEN);
 }
 
+/* OpenSSL returns a flight; the sensor receives one pack per TLS record. */
+static void
+goodix_tls_send_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  GBytes *out = fpi_ssm_get_data (ssm);
+  gsize len;
+  const guint8 *data = g_bytes_get_data (out, &len);
+
+  if (fpi_ssm_get_cur_state (ssm) == 1)
+    fpi_ssm_jump_to_state (ssm, 0);
+  else if (!len)
+    fpi_ssm_mark_completed (ssm);
+  else
+    {
+      gsize record_len = GOODIX_TLS_RECORD_HEADER + (data[3] << 8 | data[4]);
+      g_autoptr(GBytes) record = g_bytes_new_from_bytes (out, 0, record_len);
+      GBytes *remaining = g_bytes_new_from_bytes (out, record_len, len - record_len);
+
+      fpi_ssm_set_data (ssm, remaining, (GDestroyNotify) g_bytes_unref);
+      goodix_cmd_send_tls_record (ssm, dev, record);
+    }
+}
+
 typedef enum {
   GOODIX_TLS_PSK_REFRESH,
   GOODIX_TLS_PSK_CHECK,
@@ -320,7 +343,12 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
         if (!goodix_tls_handshake (self->tls, in, in_len, &out, &error))
           fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
         else if (out)
-          goodix_cmd_send_tls_record (ssm, dev, out);
+          {
+            FpiSsm *send = fpi_ssm_new (dev, goodix_tls_send_handler, 2);
+
+            fpi_ssm_set_data (send, g_steal_pointer (&out), (GDestroyNotify) g_bytes_unref);
+            fpi_ssm_start_subsm (ssm, send);
+          }
         else
           fpi_ssm_next_state (ssm);
       }
