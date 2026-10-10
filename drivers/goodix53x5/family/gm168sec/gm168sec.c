@@ -234,6 +234,13 @@ goodix_gm168sec_retry_write (const GError *error)
  * and needs it downloaded again. */
 #define GOODIX_PROTO_ACK_FLAG_CONFIG_LOST 0x02
 
+static gboolean
+goodix_gm168sec_repair_arm (guint8 status)
+{
+  (void) status;
+  return FALSE;
+}
+
 /* An ACK flagging lost configuration reports that loss; a D0 message asks
  * for a new secure-channel session rather than carrying channel bytes. */
 static GoodixSensorEvent
@@ -312,6 +319,7 @@ const GoodixFamily goodix_family_gm168sec = {
     .ec_on_payload = { 0x01, 0x00, 0x01 },
     .command_budget = goodix_wrapped_command_budget,
     .retry_write = goodix_gm168sec_retry_write,
+    .repair_arm = goodix_gm168sec_repair_arm,
     .ack_timeout_waits_for_data = TRUE,
     .event = goodix_gm168sec_event,
     .reply_answers = goodix_gm168sec_reply_answers,

@@ -84,6 +84,12 @@ goodix_receive_direct (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
       goodix_rx_cell (operation, data + offset, MIN (GOODIX_USB_CHUNK_SIZE, len - offset));
 }
 
+static gboolean
+goodix_htsec_repair_arm (guint8 status)
+{
+  return (status & 3) == 3;
+}
+
 /* 53x5 native gives no message a meaning beyond its reply. */
 static GoodixSensorEvent
 goodix_htsec_event (guint8 category, guint8 command, const guint8 *payload, gsize len)
@@ -145,6 +151,7 @@ const GoodixFamily goodix_family_htsec = {
     .ec_on_payload = { 0x01, 0x01, 0x00 },
     .command_budget = goodix_htsec_command_budget,
     .retry_write = goodix_htsec_retry_write,
+    .repair_arm = goodix_htsec_repair_arm,
     .ack_timeout_waits_for_data = FALSE,
     .event = goodix_htsec_event,
     .reply_answers = goodix_htsec_reply_answers,

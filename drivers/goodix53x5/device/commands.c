@@ -418,7 +418,8 @@ goodix_arm_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
       return;
     }
   if (state == GOODIX_ARM_CONFIG ||
-      (state == GOODIX_ARM_FIRST && !native_zero && (status & 3) == 3))
+      (state == GOODIX_ARM_FIRST && !native_zero &&
+       goodix_family (self)->protocol.repair_arm (status)))
     fpi_ssm_next_state (ssm);
   else
     fpi_ssm_mark_completed (ssm);

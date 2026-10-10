@@ -64,6 +64,8 @@ typedef struct
                                guint *ack_ms, guint *response_ms);
   /* Checks whether a failed write may use the command's retry. */
   gboolean (*retry_write) (const GError *error);
+  /* Checks whether an arm ACK needs a local config download and repeat. */
+  gboolean (*repair_arm) (guint8 status);
   /* TRUE where an ACK that does not come in time is not an error for a
    * command that expects data: the wait moves on to the data, as the
    * vendor's _IoHubExec does. FALSE retries the command. */
