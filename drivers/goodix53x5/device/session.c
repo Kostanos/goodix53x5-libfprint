@@ -694,9 +694,12 @@ goodix_gtls_attempt_done (FpiSsm *attempt, FpDevice *dev, GError *error)
       return;
     }
   retry->error = error;
-  /* No reset or PSK reload between attempts. Each failed attempt, including
-   * the last, sleeps ten ms. */
-  fpi_ssm_jump_to_state_delayed (ssm, retry->attempt < retry->limit ? 0 : 1, 10);
+  guint delay = goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->channel.retry_delay_ms;
+
+  if (delay)
+    fpi_ssm_jump_to_state_delayed (ssm, retry->attempt < retry->limit ? 0 : 1, delay);
+  else
+    fpi_ssm_jump_to_state (ssm, retry->attempt < retry->limit ? 0 : 1);
 }
 
 static void

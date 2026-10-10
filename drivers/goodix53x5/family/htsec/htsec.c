@@ -220,6 +220,7 @@ const GoodixFamily goodix_family_htsec = {
     .name = "GTLS",
     /* deviceInit runs the three-attempt wrapper twice; the event restart once. */
     .attempts = { .open = 6, .after_failed_read = 3, .reconnect = 3 },
+    .retry_delay_ms = 10,
     .attempt_new = goodix_gtls_attempt_new,
     .decrypt_frame = goodix_decrypt_frame_gtls,
     .image_error = goodix_gtls_image_error,

@@ -410,6 +410,7 @@ const GoodixFamily goodix_family_gm168sec = {
     /* Start makes one TLS call and one retry; StartTlsThread, after a failed
      * read, makes one; LogicEvtTlsConn makes at most two. */
     .attempts = { .open = 2, .after_failed_read = 1, .reconnect = 2 },
+    .retry_delay_ms = 0,
     .attempt_new = goodix_tls_attempt_new,
     .decrypt_frame = goodix_decrypt_frame_tls,
     .image_error = goodix_tls_image_error,

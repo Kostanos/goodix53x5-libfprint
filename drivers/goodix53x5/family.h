@@ -144,6 +144,7 @@ typedef struct
   /* The channel's name in logs. */
   const char           *name;
   GoodixChannelAttempts attempts;
+  guint                 retry_delay_ms;
   /* Returns a new SSM for one handshake attempt. */
   FpiSsm             *(*attempt_new) (FpDevice *dev, GoodixChannelReason reason);
   /* Decrypts an encrypted image payload into raw12 bytes in @out. */

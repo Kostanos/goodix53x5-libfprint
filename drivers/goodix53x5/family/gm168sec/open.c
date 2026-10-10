@@ -18,9 +18,12 @@
 
 typedef enum {
   GOODIX_GM168SEC_OPEN_PROBE,
+  GOODIX_GM168SEC_OPEN_FIRMWARE,
+  GOODIX_GM168SEC_OPEN_FIRMWARE_RETRY,
   GOODIX_GM168SEC_OPEN_PSK_READ,
   GOODIX_GM168SEC_OPEN_PSK_CHECK,
   GOODIX_GM168SEC_OPEN_RESET,
+  GOODIX_GM168SEC_OPEN_CHIP,
   GOODIX_GM168SEC_OPEN_READ_OTP,
   GOODIX_GM168SEC_OPEN_PARSE_OTP,
   GOODIX_GM168SEC_OPEN_CHANNEL,
@@ -35,12 +38,17 @@ goodix_gm168sec_open_state_name (GoodixGm168secOpenState state)
     {
     case GOODIX_GM168SEC_OPEN_PROBE:
       return "ping";
+    case GOODIX_GM168SEC_OPEN_FIRMWARE:
+    case GOODIX_GM168SEC_OPEN_FIRMWARE_RETRY:
+      return "firmware";
     case GOODIX_GM168SEC_OPEN_PSK_READ:
       return "early_psk_read";
     case GOODIX_GM168SEC_OPEN_PSK_CHECK:
       return "early_psk_check";
     case GOODIX_GM168SEC_OPEN_RESET:
       return "reset";
+    case GOODIX_GM168SEC_OPEN_CHIP:
+      return "chip";
     case GOODIX_GM168SEC_OPEN_READ_OTP:
       return "read_otp";
     case GOODIX_GM168SEC_OPEN_PARSE_OTP:
@@ -53,6 +61,76 @@ goodix_gm168sec_open_state_name (GoodixGm168secOpenState state)
     }
 }
 #endif
+
+static void
+goodix_gm168sec_probe_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                             gboolean native_zero, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixGm168secOpenState state = fpi_ssm_get_cur_state (ssm);
+
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  if (state == GOODIX_GM168SEC_OPEN_PROBE)
+    {
+      g_clear_error (&error);
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+  if (error)
+    {
+      g_clear_error (&error);
+      if (state == GOODIX_GM168SEC_OPEN_FIRMWARE)
+        fpi_ssm_next_state (ssm);
+      else
+        fpi_ssm_mark_failed (ssm, goodix_gm168sec_check_firmware (NULL));
+      return;
+    }
+  g_free (self->fw_version);
+  self->fw_version = g_strndup ((const gchar *) self->shared_response,
+                                sizeof (self->shared_response));
+  error = goodix_gm168sec_check_firmware (self->fw_version);
+  if (error)
+    fpi_ssm_mark_failed (ssm, error);
+  else
+    fpi_ssm_jump_to_state (ssm, GOODIX_GM168SEC_OPEN_PSK_READ);
+}
+
+static void
+goodix_gm168sec_chip_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                            gboolean native_zero, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  const guint8 *payload;
+  gsize len;
+
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_GM168SEC_OPEN_RESET && (!error || native_zero))
+    {
+      g_clear_error (&error);
+      fpi_ssm_next_state_delayed (ssm, 10);
+      return;
+    }
+  if (error || !goodix_cmd_parse_chip_id_reply (dev, &payload, &len, &error))
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  if (len != 4)
+    {
+      fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                            FP_DEVICE_ERROR_PROTO, "Unexpected chip ID reply length: %zu", len));
+      return;
+    }
+  self->chip_id = goodix_crypto_decode_u32 (payload);
+  if (!goodix_milan_runtime_subtype_for_chip (self->chip_id, &self->milan_sensor_subtype))
+    fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                          FP_DEVICE_ERROR_NOT_SUPPORTED, "Unsupported chip 0x%08x", self->chip_id));
+  else
+    fpi_ssm_next_state (ssm);
+}
 
 /* Brings a 533c up to an established TLS session in the vendor's order:
  * SelfCheck's firmware reads, the PSK check the vendor makes before it
@@ -71,8 +149,10 @@ goodix_gm168sec_open_handler (FpiSsm *ssm, FpDevice *dev)
   switch (state)
     {
     case GOODIX_GM168SEC_OPEN_PROBE:
-      /* SelfCheck reads, then wakes and reads once more. */
-      goodix_open_probe (ssm, dev, 2, goodix_gm168sec_check_firmware);
+    case GOODIX_GM168SEC_OPEN_FIRMWARE:
+    case GOODIX_GM168SEC_OPEN_FIRMWARE_RETRY:
+      goodix_cmd_probe (ssm, dev, state != GOODIX_GM168SEC_OPEN_PROBE,
+                         goodix_gm168sec_probe_result);
       break;
 
     case GOODIX_GM168SEC_OPEN_PSK_READ:
@@ -100,7 +180,14 @@ goodix_gm168sec_open_handler (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case GOODIX_GM168SEC_OPEN_RESET:
-      goodix_open_identify_chip (ssm, dev, TRUE);
+      self->profile9_fdt.drift_anchor_empty = TRUE;
+      goodix_health_reset (&self->health);
+      self->capture_callback_pending = FALSE;
+      goodix_cmd_reset_sensor (ssm, dev, TRUE, goodix_gm168sec_chip_result);
+      break;
+
+    case GOODIX_GM168SEC_OPEN_CHIP:
+      goodix_cmd_read_chip_id (ssm, dev, goodix_gm168sec_chip_result);
       break;
 
     case GOODIX_GM168SEC_OPEN_READ_OTP:
