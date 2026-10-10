@@ -1185,8 +1185,10 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
             if (!goodix_psk_hash_reply_matches (dev, &matches, &error))
               {
-                g_prefix_error (&error, "After the PSK write: ");
-                fpi_ssm_mark_failed (ssm, error);
+                g_clear_error (&error);
+                fpi_ssm_mark_failed (ssm,
+                                     fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                               "Failed to re-read PSK hash"));
                 return;
               }
 
