@@ -255,9 +255,17 @@ goodix_tls_send_handler (FpiSsm *ssm, FpDevice *dev)
   GBytes *out = fpi_ssm_get_data (ssm);
   gsize len;
   const guint8 *data = g_bytes_get_data (out, &len);
+  g_autoptr(GError) error = NULL;
+
+  if (g_cancellable_set_error_if_cancelled (goodix_session_io_cancellable (dev), &error))
+    {
+      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+      return;
+    }
 
   if (fpi_ssm_get_cur_state (ssm) == 1)
-    fpi_ssm_jump_to_state (ssm, 0);
+    /* TOD's write and send callback sleep 1 + 2 ms, even on the last record. */
+    fpi_ssm_jump_to_state_delayed (ssm, 0, 3);
   else if (!len)
     fpi_ssm_mark_completed (ssm);
   else

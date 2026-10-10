@@ -361,6 +361,15 @@ goodix_validate_ack_for_cmd (FpDevice       *dev,
  * ======================================================================== */
 
 static void
+goodix_record_write_failed (FpDevice *dev, gpointer data)
+{
+  GoodixTransport *operation = FPI_DEVICE_GOODIX53X5 (dev)->transport;
+
+  operation->timer = NULL;
+  goodix_transport_complete (operation, g_error_copy (data));
+}
+
+static void
 goodix_tx_cb (FpiUsbTransfer *transfer,
               FpDevice       *dev,
               gpointer        user_data,
@@ -369,6 +378,13 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
   GoodixTransport *operation = user_data;
   GoodixReader *reader = FPI_DEVICE_GOODIX53X5 (dev)->reader;
 
+  /* TOD's WriteTls sleeps 1 ms after every record write, failed or not. */
+  if (error && operation->record)
+    {
+      operation->timer = fpi_device_add_timeout (dev, 1, goodix_record_write_failed,
+                                                 error, (GDestroyNotify) g_error_free);
+      return;
+    }
   if (error)
     {
       goodix_transport_complete (operation, error);
