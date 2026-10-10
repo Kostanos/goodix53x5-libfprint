@@ -881,6 +881,22 @@ test_wrapped_power_loss_refreshes_psk (void)
   g_assert_error (foreign_error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID);
 }
 
+/* A power loss reported on the last ACK before a suspend still refreshes the
+ * PSK on resume: invalidating the transport keeps the request. */
+static void
+test_wrapped_psk_refresh_survives_suspend (void)
+{
+  const guint8 lost[2] = { 0xae, 0x03 };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  receive_message (dev, 0xb, 0, lost, sizeof (lost));
+  goodix_transport_invalidate (dev);
+  g_assert_true (self->psk_refresh_pending);
+  g_clear_pointer (&self->rx.buf, g_free);
+  g_clear_object (&action_cancel_token);
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -917,6 +933,8 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/ec-on-payload", test_wrapped_ec_on_payload);
   g_test_add_func ("/goodix53x5/wrapped/power-loss-refreshes-psk",
                    test_wrapped_power_loss_refreshes_psk);
+  g_test_add_func ("/goodix53x5/wrapped/psk-refresh-survives-suspend",
+                   test_wrapped_psk_refresh_survives_suspend);
   g_test_add_func ("/goodix53x5/wrapped/d0-requests-reconnect",
                    test_wrapped_d0_requests_reconnect);
 }

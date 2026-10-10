@@ -1344,7 +1344,8 @@ goodix_transport_invalidate (FpDevice *dev)
   self->image_error_history = FALSE;
   self->gtls_restart_pending = FALSE;
   self->reconnect_requested = FALSE;
-  self->psk_refresh_pending = FALSE;
+  /* psk_refresh_pending survives: the sensor stays unkeyed across a suspend
+   * until the refresh runs, as the vendor's Stop keeps its flag for Start. */
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);

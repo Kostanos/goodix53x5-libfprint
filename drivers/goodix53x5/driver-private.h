@@ -208,7 +208,8 @@ struct _FpiDeviceGoodix53x5
   gboolean reconnect_requested;
   /* Set by the same ACK flag as config_lost: a sensor that lost power takes
    * no TLS handshake until its PSK is read again, so the next secure-channel
-   * attempt reads and checks it first, as the vendor's PSK refresh does. */
+   * attempt reads and checks it first, as the vendor's PSK refresh does.
+   * Cleared only once that check passes, so it outlives a suspend. */
   gboolean psk_refresh_pending;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   /* Parser mutations precede coalesced notification. The latest reverse event
