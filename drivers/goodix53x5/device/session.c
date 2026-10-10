@@ -34,10 +34,7 @@
 #include <string.h>
 #include <openssl/crypto.h>
 
-/* Overridable for running the driver unprivileged during development. */
-#ifndef GOODIX_PSK_STATE_FILE
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
-#endif
 
 /* ========================================================================
  * Hardware ownership

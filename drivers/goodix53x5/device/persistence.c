@@ -22,10 +22,7 @@
 
 #include <glib/gstdio.h>
 
-/* Overridable for running the driver unprivileged during development. */
-#ifndef GOODIX_MILAN_STATE_DIR
 #define GOODIX_MILAN_STATE_DIR "/var/lib/fprint"
-#endif
 #define GOODIX_MILAN_STATE_PREFIX "goodix53x5-preprocess-"
 #define GOODIX_MILAN_STATE_VERSION 2u
 #define GOODIX_MILAN_STATE_HEADER_SIZE 64u
