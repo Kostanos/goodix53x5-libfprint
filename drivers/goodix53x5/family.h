@@ -124,6 +124,8 @@ typedef struct
   /* Counts one undecodable frame; returns TRUE when the channel must be
    * restarted for it. */
   gboolean            (*image_error) (FpiDeviceGoodix53x5 *self);
+  /* Checks whether a failed capture may arm while channel recovery is pending. */
+  gboolean            (*rearm_after_capture) (FpiDeviceGoodix53x5 *self);
   /* TRUE where starting a new session drops the finger-detect arm, so a
    * restart still pending runs before an arm. */
   gboolean              restart_disarms;

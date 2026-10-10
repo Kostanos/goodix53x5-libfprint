@@ -315,6 +315,12 @@ goodix_gm168sec_may_send (const GoodixCmd *cmd)
   return !goodix_cmd_writes_sensor (cmd);
 }
 
+static gboolean
+goodix_gm168sec_rearm_after_capture (FpiDeviceGoodix53x5 *self)
+{
+  return !self->psk_refresh_pending;
+}
+
 const GoodixFamily goodix_family_gm168sec = {
   .link = {
     .usb_interface = 0,
@@ -348,6 +354,7 @@ const GoodixFamily goodix_family_gm168sec = {
     .attempt_new = goodix_tls_attempt_new,
     .decrypt_frame = goodix_decrypt_frame_tls,
     .image_error = goodix_tls_image_error,
+    .rearm_after_capture = goodix_gm168sec_rearm_after_capture,
     .restart_disarms = TRUE,
     .discard = goodix_tls_discard,
   },

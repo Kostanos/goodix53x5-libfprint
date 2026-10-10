@@ -1463,7 +1463,9 @@ goodix_capture_ssm_done (FpiSsm   *ssm,
   g_clear_error (&error);
 
   /* Application cancellation cannot cut short the selected handler's rearm. */
-  fpi_ssm_jump_to_state (capture->parent_ssm, GOODIX_SCAN_COORD_REARM_DOWN);
+  fpi_ssm_jump_to_state (capture->parent_ssm,
+                         goodix_family (self)->channel.rearm_after_capture (self) ?
+                         GOODIX_SCAN_COORD_REARM_DOWN : GOODIX_SCAN_COORD_REARM_DOWN_DONE);
 }
 
 /* ========================================================================

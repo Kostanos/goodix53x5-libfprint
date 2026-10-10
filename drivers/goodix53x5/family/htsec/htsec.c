@@ -142,6 +142,13 @@ goodix_htsec_check_firmware (const char *firmware)
   return NULL;
 }
 
+static gboolean
+goodix_htsec_rearm_after_capture (FpiDeviceGoodix53x5 *self)
+{
+  (void) self;
+  return TRUE;
+}
+
 const GoodixFamily goodix_family_htsec = {
   .link = {
     .usb_interface = 1,
@@ -172,6 +179,7 @@ const GoodixFamily goodix_family_htsec = {
     .attempt_new = goodix_gtls_attempt_new,
     .decrypt_frame = goodix_decrypt_frame_gtls,
     .image_error = goodix_gtls_image_error,
+    .rearm_after_capture = goodix_htsec_rearm_after_capture,
     .restart_disarms = FALSE,
     .discard = goodix_gtls_discard,
   },
