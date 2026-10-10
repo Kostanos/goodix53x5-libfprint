@@ -765,7 +765,8 @@ goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
   return goodix_variant (self)->replies_match_command && operation && !operation->record &&
          (operation->phase == GOODIX_TRANSPORT_SEND || operation->phase == GOODIX_TRANSPORT_ACK ||
           operation->phase == GOODIX_TRANSPORT_RESPONSE) &&
-         goodix_response_slot_is_shared (slot) &&
+         (goodix_response_slot_is_shared (slot) ||
+          (slot == GOODIX_RESPONSE_CONFIG && goodix_cmd_is_config_download (&operation->cmd))) &&
          (category != operation->cmd.category || command != operation->cmd.command);
 }
 
