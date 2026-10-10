@@ -672,10 +672,18 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
                           self->image_response_failed &&
                           (operation->phase == GOODIX_TRANSPORT_ACK ||
                            operation->phase == GOODIX_TRANSPORT_RESPONSE);
+  gboolean config_failed = !error && operation->expect_data &&
+                           goodix_variant (self)->ack_reports_config_loss &&
+                           goodix_cmd_is_config_download (&operation->cmd) &&
+                           self->config_response_status != 1;
 
   if (image_failed)
     error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO,
                                  "Image receiver rejected the frame");
+  if (config_failed)
+    error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                     "Configuration download failed: status %u",
+                                     self->config_response_status);
   if (!error && operation->expect_data &&
       (operation->phase == GOODIX_TRANSPORT_ACK || operation->phase == GOODIX_TRANSPORT_RESPONSE))
     error = goodix_transport_select_response (operation);
@@ -683,7 +691,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
     .ack_status = operation->ack_status,
     .restart_gtls = operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending,
     .ordinary_exhaustion = error && !(self->reader && self->reader->error) &&
-      (image_failed || goodix_cmd_native_zero (operation->phase, error)),
+      (image_failed || config_failed || goodix_cmd_native_zero (operation->phase, error)),
     .write_cancelled = operation->phase == GOODIX_TRANSPORT_SEND &&
       operation->write_submitted &&
       (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
@@ -945,6 +953,9 @@ goodix_rx_cell (GoodixTransport *operation,
             }
           if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == 2)
             self->config_response_status = payload[0];
+          if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD &&
+              goodix_variant (self)->ack_reports_config_loss)
+            self->config_response_status = payload_len ? payload[0] : 0;
 
           /* DataFromDevice publishes these shared stores without a matching
            * command. Only A/0, A/1 and A/4 signal the version getter's event.
