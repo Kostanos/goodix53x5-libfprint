@@ -88,9 +88,6 @@ typedef struct
   gboolean                       cpu_outstanding;
   gboolean                       refresh_deferred;
   gboolean                       cycle_active;
-  /* Set once a download of the configuration the sensor reported lost ran
-   * since the last finger event, so a failed one is not retried in a loop. */
-  gboolean                       lost_config_tried;
   gboolean                       recovering_generation;
   gboolean                       release_settled;
   gboolean                       idle;
@@ -349,7 +346,7 @@ goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
       goodix_start_gtls_restart (dev, goodix_scan_gtls_restarted, data);
       return;
     }
-  if (!error && self->config_lost && !self->pending_fdt.event.pending)
+  if (!error && self->config_restore_pending && !self->pending_fdt.event.pending)
     {
       /* Woken by a configuration loss: restore it before waiting again. */
       fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
@@ -428,6 +425,7 @@ goodix_scan_lost_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
 {
   GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
 
+  FPI_DEVICE_GOODIX53X5 (dev)->config_restore_active = FALSE;
   if (error && !native_zero)
     {
       fpi_ssm_mark_failed (ssm, error);
@@ -559,9 +557,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             goodix_scan_maybe_finish_requested (data);
             return;
           }
-        if (self->config_lost && !data->lost_config_tried && !data->stop_requested)
+        if (self->config_restore_pending && !data->stop_requested)
           {
-            data->lost_config_tried = TRUE;
             data->dispatching = TRUE;
             fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG);
             return;
@@ -588,7 +585,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             return;
           }
         data->dispatching = TRUE;
-        data->lost_config_tried = FALSE;
 
         if (data->event_type == GOODIX_FDT_EVENT_ESD)
           {
@@ -863,6 +859,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG:
+      self->config_restore_pending = FALSE;
+      self->config_restore_active = TRUE;
       goodix_cmd_restore_config (ssm, dev, goodix_scan_lost_config_restored);
       break;
 

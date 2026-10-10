@@ -198,11 +198,11 @@ struct _FpiDeviceGoodix53x5
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;
   gboolean image_response_failed;
-  /* Set when an ACK reports the sensor lost its configuration, on a variant
-   * whose ACKs say so; cleared by the next configuration download that
-   * completes. The scan restores the configuration before it waits for a
-   * finger again. */
+  /* Wrapped ACK loss state; a successful download clears it only after the
+   * independent loss notification has been serviced. */
   gboolean config_lost;
+  gboolean config_restore_pending;
+  gboolean config_restore_active;
   /* Set when the sensor asks for a new secure channel with a D0 message, on
    * a variant that sends one; the scan's channel restart then arms
    * finger-down, as the vendor's reconnect handler does. */

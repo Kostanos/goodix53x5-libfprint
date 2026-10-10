@@ -709,8 +709,8 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
                       goodix_cmd_phase_name (operation->phase), operation->attempt);
     }
 
-  /* Only a download that completed restores a lost configuration. */
-  if (!error && operation->expect_data && goodix_cmd_is_config_download (&operation->cmd))
+  if (!error && operation->expect_data && goodix_cmd_is_config_download (&operation->cmd) &&
+      !self->config_restore_pending)
     self->config_lost = FALSE;
   self->transport = NULL;
   goodix_transport_free (operation);
@@ -854,6 +854,8 @@ goodix_rx_cell (GoodixTransport *operation,
             fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
           self->config_lost = TRUE;
           self->psk_refresh_pending = TRUE;
+          if (!self->config_restore_active)
+            self->config_restore_pending = TRUE;
           /* A scan waiting for a finger restores the configuration first. */
           if (operation->phase == GOODIX_TRANSPORT_EVENT)
             {
