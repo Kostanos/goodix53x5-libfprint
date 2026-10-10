@@ -167,11 +167,17 @@ goodix_tls_established (GoodixTls *tls)
   return SSL_is_init_finished (tls->ssl);
 }
 
-/* Checks whether OpenSSL holds part of a record it has not decrypted yet. */
+/* Checks whether @records is a run of whole TLS records, each its 5-byte
+ * header and the length that header announces. OpenSSL would keep a cut
+ * record, even a bare header, for the next call and fail that one instead. */
 static gboolean
-goodix_tls_has_partial_record (GoodixTls *tls)
+goodix_tls_records_whole (const guint8 *records, gsize len)
 {
-  return SSL_has_pending (tls->ssl) || BIO_ctrl_pending (tls->in);
+  gsize offset = 0;
+
+  while (offset + 5 <= len)
+    offset += 5 + (records[offset + 3] << 8 | records[offset + 4]);
+  return offset == len;
 }
 
 guint8 *
@@ -185,6 +191,12 @@ goodix_tls_decrypt (GoodixTls    *tls,
   gboolean ok;
   int ret = 0;
 
+  if (!goodix_tls_records_whole (records, records_len))
+    {
+      fp_warn ("TLS record is incomplete");
+      g_byte_array_free (plain, TRUE);
+      return NULL;
+    }
   ok = BIO_write (tls->in, records, records_len) == (int) records_len;
   while (ok && (ret = SSL_read (tls->ssl, buf, sizeof (buf))) > 0)
     g_byte_array_append (plain, buf, ret);
@@ -193,11 +205,6 @@ goodix_tls_decrypt (GoodixTls    *tls,
   if (ok && SSL_get_error (tls->ssl, ret) != SSL_ERROR_WANT_READ)
     {
       fp_warn ("TLS record did not authenticate");
-      ok = FALSE;
-    }
-  else if (ok && goodix_tls_has_partial_record (tls))
-    {
-      fp_warn ("TLS record is incomplete");
       ok = FALSE;
     }
   else if (ok && !plain->len)

@@ -266,6 +266,20 @@ test_wrapped_tls_truncated_record (void)
   data = g_bytes_get_data (whole, &len);
   plain = goodix_tls_decrypt (tls, data, len, &plain_len);
   g_assert_cmpmem (plain, plain_len, image, sizeof (image));
+
+  /* A whole record followed by the bare header of the next one. */
+  {
+    g_autoptr(GBytes) record = tls_peer_seal (peer, image, sizeof (image));
+    g_autoptr(GBytes) next = tls_peer_seal (peer, image, sizeof (image));
+    g_autoptr(GByteArray) cut_after = g_byte_array_new ();
+
+    g_byte_array_append (cut_after, g_bytes_get_data (record, NULL), g_bytes_get_size (record));
+    g_byte_array_append (cut_after, g_bytes_get_data (next, NULL), 5);
+    g_test_expect_message ("libfprint-goodix53x5", G_LOG_LEVEL_WARNING,
+                           "TLS record is incomplete");
+    g_assert_null (goodix_tls_decrypt (tls, cut_after->data, cut_after->len, &plain_len));
+    g_test_assert_expected_messages ();
+  }
   goodix_tls_free (tls);
 }
 
