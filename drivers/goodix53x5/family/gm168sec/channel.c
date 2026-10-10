@@ -38,9 +38,7 @@ goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
 {
   gboolean established = self->tls && goodix_tls_established (self->tls);
 
-  *out = established && len > GOODIX_PACK_TLS_DATA_HDR ?
-         goodix_tls_decrypt (self->tls, payload + GOODIX_PACK_TLS_DATA_HDR,
-                             len - GOODIX_PACK_TLS_DATA_HDR, out_len) : NULL;
+  *out = established ? goodix_tls_decrypt (self->tls, payload, len, out_len) : NULL;
   if (*out && !goodix_wrapped_image_valid (*out, *out_len))
     {
       /* The vendor restarts TLS only when the read itself fails. */

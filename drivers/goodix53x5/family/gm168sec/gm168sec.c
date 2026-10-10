@@ -129,14 +129,20 @@ goodix_rx_pack (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
       if (len)
         goodix_rx_message (operation, payload, len);
     }
-  else if (flags & GOODIX_PACK_TLS_PREFIXED)
-    {
-      goodix_rx_image (operation, payload, len);
-    }
   else
     {
-      /* Handshake records share the category-D stream and its waiter. */
-      goodix_mcu_publish (self, payload, len);
+      if (flags & GOODIX_PACK_TLS_PREFIXED)
+        {
+          if (len < GOODIX_PACK_TLS_DATA_HDR)
+            return;
+          payload += GOODIX_PACK_TLS_DATA_HDR;
+          len -= GOODIX_PACK_TLS_DATA_HDR;
+        }
+      if (self->tls && goodix_tls_established (self->tls))
+        goodix_rx_image (operation, payload, len);
+      else
+        /* Handshake records share the category-D stream and its waiter. */
+        goodix_mcu_publish (self, payload, len);
     }
 }
 
