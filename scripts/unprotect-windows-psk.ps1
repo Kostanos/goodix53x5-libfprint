@@ -1,6 +1,6 @@
 #Requires -RunAsAdministrator
 # Unprotects the 533c's sealed PSK, saved by extract-windows-psk.sh --533c, as
-# LocalService, the account Dell's driver sealed it with, and saves the key as
+# SYSTEM, the account Dell's driver sealed it with, and saves the key as
 # hexadecimal for install-windows-psk.sh --533c.
 param(
     [Parameter(Mandatory = $true)][string]$BlobFile,
@@ -14,10 +14,10 @@ if (Test-Path -LiteralPath $output) { throw "Output already exists: $output" }
 
 $name = 'GoodixPsk-' + [guid]::NewGuid().ToString('N')
 $work = Join-Path $env:ProgramData $name
-# Created with its ACL: full access for SYSTEM and Administrators, modify for
-# LocalService, and nothing for anyone else.
+# Created with its ACL: full access for SYSTEM and Administrators, and nothing
+# for anyone else.
 $acl = New-Object Security.AccessControl.DirectorySecurity
-$acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)')
+$acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
 [IO.Directory]::CreateDirectory($work, $acl) | Out-Null
 try {
     Copy-Item -LiteralPath $blob -Destination (Join-Path $work 'blob.bin')
@@ -38,8 +38,8 @@ try {
 
     $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$worker`""
-    # S-1-5-19 is LocalService, whatever the system language.
-    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-19' -LogonType ServiceAccount
+    # S-1-5-18 is SYSTEM, whatever the system language.
+    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings | Out-Null
     $notRun = (Get-ScheduledTaskInfo -TaskName $name).LastRunTime
