@@ -561,6 +561,18 @@ test_wrapped_open_foreign_firmware (void)
   g_assert_cmpstr (trace, ==, "00,(4:00),a8,(2:00),");
 }
 
+/* SelfCheck parses chip, platform, mode and version, so a firmware string
+ * with fewer than three separators fails it even on a GM168SEC. */
+static void
+test_wrapped_self_check_parse (void)
+{
+  g_assert_true (goodix_wrapped_self_check ("GF5288_GM168SEC_APP_13016"));
+  g_assert_true (goodix_wrapped_self_check ("GF5288_GM168_APP_13016"));
+  g_assert_false (goodix_wrapped_self_check ("GF5288_GM168SEC_APP"));
+  g_assert_false (goodix_wrapped_self_check ("GF5288_GM168SEC"));
+  g_assert_false (goodix_wrapped_self_check ("GF5288_GD32_APP_13016"));
+}
+
 /* Without a firmware version there is no SelfCheck, so open stops; 53x5
  * native continues instead. */
 static void
@@ -847,6 +859,7 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/open-unacked-reply", test_wrapped_open_unacked_reply);
   g_test_add_func ("/goodix53x5/wrapped/open-foreign-firmware",
                    test_wrapped_open_foreign_firmware);
+  g_test_add_func ("/goodix53x5/wrapped/self-check-parse", test_wrapped_self_check_parse);
   g_test_add_func ("/goodix53x5/wrapped/open-unreadable-firmware",
                    test_wrapped_open_unreadable_firmware);
   g_test_add_func ("/goodix53x5/wrapped/open-foreign-psk", test_wrapped_open_foreign_psk);

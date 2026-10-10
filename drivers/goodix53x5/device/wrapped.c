@@ -214,14 +214,15 @@ goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self, const guint8 *payload,
   return established ? GOODIX_FRAME_REJECTED_IN_SESSION : GOODIX_FRAME_REJECTED;
 }
 
-/* Checks whether @firmware, such as GF5288_GM168SEC_APP_13016, names the
- * GM168 or GM168SEC platform, as the vendor's SelfCheck requires. */
+/* Checks whether @firmware parses as chip_platform_mode_version, such as
+ * GF5288_GM168SEC_APP_13016, and names the GM168 or GM168SEC platform, as
+ * the vendor's SelfCheck requires. */
 static gboolean
 goodix_wrapped_self_check (const char *firmware)
 {
   g_auto(GStrv) fields = g_strsplit (firmware, "_", 4);
 
-  return g_strv_length (fields) >= 2 &&
+  return g_strv_length (fields) == 4 &&
          (g_ascii_strcasecmp (fields[1], "GM168") == 0 ||
           g_ascii_strcasecmp (fields[1], "GM168SEC") == 0);
 }
