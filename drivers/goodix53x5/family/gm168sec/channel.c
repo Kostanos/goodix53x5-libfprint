@@ -116,11 +116,11 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       if (!self->psk_refresh_pending)
         fpi_ssm_jump_to_state (ssm, GOODIX_TLS_REQUEST);
       else
-        goodix_read_psk_hash_wrapped (ssm, dev);
+        goodix_cmd_preset_read (ssm, dev, GOODIX_WRAPPED_PSK_HASH_TYPE, GOODIX_PSK_HASH_LEN);
       break;
 
     case GOODIX_TLS_PSK_CHECK:
-      if (!goodix_require_current_psk (dev, &error))
+      if (!goodix_require_current_psk (dev, GOODIX_WRAPPED_PSK_HASH_TYPE, &error))
         {
           fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
           return;

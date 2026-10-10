@@ -53,6 +53,8 @@ static guint startup_delays;
 #undef GOODIX_PSK_STATE_FILE
 #define GOODIX_PSK_STATE_FILE "/nonexistent/goodix53x5-test.psk"
 #include "drivers/goodix53x5/device/session.c"
+#include "drivers/goodix53x5/family/htsec/open.c"
+#include "drivers/goodix53x5/family/gm168sec/open.c"
 #undef fpi_ssm_jump_to_state_delayed
 #undef fpi_device_get_usb_device
 #undef fpi_device_action_is_cancelled

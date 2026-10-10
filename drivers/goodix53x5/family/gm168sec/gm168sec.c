@@ -17,7 +17,6 @@
 #include "drivers_api.h"
 #include "driver-private.h"
 #include "device/transport.h"
-#include "device/commands.h"
 #include "family/gm168sec/gm168sec.h"
 #include "family/gm168sec/tls.h"
 
@@ -194,6 +193,17 @@ goodix_wrapped_self_check (const char *firmware)
          g_ascii_strcasecmp (platform, "GM168SEC") == 0;
 }
 
+GError *
+goodix_gm168sec_check_firmware (const char *firmware)
+{
+  if (!firmware)
+    return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO, "Firmware version unreadable");
+  if (!goodix_wrapped_self_check (firmware))
+    return fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
+                                     "Firmware %s is not for this sensor's MCU", firmware);
+  return NULL;
+}
+
 /* The vendor's MCU context waits 1500 ms for every ACK and every reply;
  * EC control alone gives its ACK 500 ms. */
 static void
@@ -201,12 +211,6 @@ goodix_wrapped_command_budget (guint8 command, guint *ack_ms, guint *response_ms
 {
   *ack_ms = command == 0xae ? 500 : 1500;
   *response_ms = 1500;
-}
-
-void
-goodix_read_psk_hash_wrapped (FpiSsm *ssm, FpDevice *dev)
-{
-  goodix_cmd_preset_read (ssm, dev, GOODIX_WRAPPED_PSK_HASH_TYPE, GOODIX_PSK_HASH_LEN);
 }
 
 const GoodixFamily goodix_family_gm168sec = {
@@ -241,12 +245,5 @@ const GoodixFamily goodix_family_gm168sec = {
     .restart_on_first_image_error = TRUE,
     .restart_disarms = TRUE,
   },
-  /* SelfCheck reads, then wakes and reads once more. */
-  .firmware_reads = 2,
-  .firmware_required = TRUE,
-  .self_check = goodix_wrapped_self_check,
-  .psk_checked_before_reset = TRUE,
-  .initial_reset_requests_irq = TRUE,
-  .psk_hash_type = GOODIX_WRAPPED_PSK_HASH_TYPE,
-  .read_psk_hash = goodix_read_psk_hash_wrapped,
+  .open_new = goodix_gm168sec_open_new,
 };

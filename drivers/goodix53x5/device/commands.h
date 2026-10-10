@@ -74,13 +74,7 @@ void goodix_cmd_mcu_send (FpiSsm *ssm, FpDevice *dev, guint32 data_type,
 /* Post-MCU-ACK GTLS wait; consume the bounded stream after its receive signal. */
 void goodix_recv_mcu (FpiSsm *ssm, FpDevice *dev, guint timeout, gsize length);
 
-/* Returns the PSK hash answering GoodixFamily.read_psk_hash, or FALSE when
- * the reply is not from that slot. */
-gboolean goodix_cmd_parse_psk_hash_reply (FpDevice      *dev,
-                                          const guint8 **out_hash,
-                                          gsize         *out_hash_len);
-
-/* Wrapped sensors (27c6:533c) only. */
+/* GM168SEC sensors (27c6:533c) only. */
 /* Reads @length bytes of preset @slot; the reply has production_read's
  * layout, so goodix_cmd_parse_production_read_reply() reads it. */
 void goodix_cmd_preset_read (FpiSsm *ssm, FpDevice *dev, guint32 slot,

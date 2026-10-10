@@ -13,7 +13,6 @@
 #include "drivers_api.h"
 #include "driver-private.h"
 #include "device/transport.h"
-#include "device/commands.h"
 #include "family/htsec/htsec.h"
 
 #include <string.h>
@@ -71,18 +70,12 @@ goodix_receive_direct (FpiDeviceGoodix53x5 *self, GoodixTransport *operation,
       goodix_rx_cell (operation, data + offset, MIN (GOODIX_USB_CHUNK_SIZE, len - offset));
 }
 
-/* 53x5 native checks no MCU platform. */
-static gboolean
-goodix_direct_self_check (const char *firmware)
+/* 53x5 native checks no MCU platform and continues without a version. */
+GError *
+goodix_htsec_check_firmware (const char *firmware)
 {
   (void) firmware;
-  return TRUE;
-}
-
-static void
-goodix_read_psk_hash_direct (FpiSsm *ssm, FpDevice *dev)
-{
-  goodix_cmd_production_read (ssm, dev, goodix_family_htsec.psk_hash_type);
+  return NULL;
 }
 
 const GoodixFamily goodix_family_htsec = {
@@ -113,11 +106,5 @@ const GoodixFamily goodix_family_htsec = {
     .restart_on_first_image_error = FALSE,
     .restart_disarms = FALSE,
   },
-  .firmware_reads = 5,
-  .firmware_required = FALSE,
-  .self_check = goodix_direct_self_check,
-  .psk_checked_before_reset = FALSE,
-  .initial_reset_requests_irq = FALSE,
-  .psk_hash_type = 0xB003,
-  .read_psk_hash = goodix_read_psk_hash_direct,
+  .open_new = goodix_htsec_open_new,
 };

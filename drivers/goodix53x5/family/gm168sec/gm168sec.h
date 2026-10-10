@@ -19,8 +19,11 @@
 #define GOODIX_WRAPPED_PSK_HASH_TYPE 0xbb020001
 #define GOODIX_PSK_HASH_LEN          32
 
-/* Requests the PSK hash from its preset slot. */
-void    goodix_read_psk_hash_wrapped (FpiSsm *ssm, FpDevice *dev);
+/* Fails without a firmware version, or with one that is not for the
+ * GM168 or GM168SEC platform, as the vendor's SelfCheck does. */
+GError *goodix_gm168sec_check_firmware (const char *firmware);
+/* Returns a new SSM running the 533c bring-up. */
+FpiSsm *goodix_gm168sec_open_new (FpDevice *dev);
 
 /* Returns a new SSM for one TLS handshake attempt. */
 FpiSsm *goodix_tls_attempt_new (FpDevice *dev);

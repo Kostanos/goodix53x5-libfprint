@@ -12,6 +12,11 @@
 
 #include "driver-private.h"
 
+/* Accepts any firmware version, or none. */
+GError *goodix_htsec_check_firmware (const char *firmware);
+/* Returns a new SSM running the 53x5 bring-up. */
+FpiSsm *goodix_htsec_open_new (FpDevice *dev);
+
 /* Returns a new SSM for one GTLS handshake attempt. */
 FpiSsm *goodix_gtls_attempt_new (FpDevice *dev);
 /* Decrypts a GTLS image payload into raw12 bytes in @out. */

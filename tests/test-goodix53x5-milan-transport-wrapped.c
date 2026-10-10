@@ -594,7 +594,7 @@ run_wrapped_open (const WrappedOpen *sensor, GError **error)
   g_autoptr(FpDevice) dev = wrapped_device_new ();
 
   return run_wrapped (dev, fpi_ssm_new_full (dev, goodix_open_ssm_handler,
-                                             GOODIX_OPEN_READ_OTP, GOODIX_OPEN_READ_OTP,
+                                             GOODIX_OPEN_UPLOAD_CONFIG, GOODIX_OPEN_UPLOAD_CONFIG,
                                              "wrapped-open"),
                       sensor, error);
 }

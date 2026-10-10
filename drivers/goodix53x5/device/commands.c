@@ -756,16 +756,6 @@ goodix_cmd_parse_production_read_reply (FpDevice      *dev,
 }
 
 gboolean
-goodix_cmd_parse_psk_hash_reply (FpDevice      *dev,
-                                 const guint8 **out_hash,
-                                 gsize         *out_hash_len)
-{
-  return goodix_cmd_parse_production_read_reply (
-    dev, goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->psk_hash_type,
-    out_hash, out_hash_len);
-}
-
-gboolean
 goodix_cmd_parse_production_write_reply (FpDevice      *dev,
                                          const guint8 **out_payload,
                                          gsize         *out_payload_len)

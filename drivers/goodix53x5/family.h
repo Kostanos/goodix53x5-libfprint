@@ -119,22 +119,10 @@ typedef struct
   GoodixLink     link;
   GoodixProtocol protocol;
   GoodixChannel  channel;
-  /* The firmware-version reads open attempts before giving up on the version. */
-  guint          firmware_reads;
-  /* TRUE where open fails without a firmware version, as SelfCheck needs one;
-   * 53x5 native continues without it. */
-  gboolean       firmware_required;
-  /* Checks whether @firmware runs on an MCU platform this driver speaks to. */
-  gboolean     (*self_check) (const char *firmware);
-  /* TRUE where the vendor checks the PSK before resetting the sensor and
-   * reading its chip ID and OTP, so open does too. */
-  gboolean       psk_checked_before_reset;
-  /* TRUE where the first reset asks for the IRQ status reply. */
-  gboolean       initial_reset_requests_irq;
-  /* The preset slot holding the SHA-256 of the sensor's PSK. */
-  guint32        psk_hash_type;
-  /* Requests the PSK hash; goodix_cmd_parse_psk_hash_reply() reads it. */
-  void         (*read_psk_hash) (FpiSsm *ssm, FpDevice *dev);
+  /* Returns a new SSM running the family's bring-up, from the first probe
+   * to the established secure channel. The open SSM runs it between claiming
+   * the interface and the first configuration download. */
+  FpiSsm      *(*open_new) (FpDevice *dev);
 } GoodixFamily;
 
 /* 5335/5385/5395: direct framing on interface 1, GTLS, HTSEC MCU. */

@@ -48,9 +48,6 @@
 /* Enroll stages */
 #define GOODIX_ENROLL_SAMPLES 12
 
-/* PSK white box for writing the default all-zero PSK. */
-#define GOODIX_PSK_WHITE_BOX_LEN 96
-
 /* --- Calibration parameters (from OTP) --- */
 typedef struct
 {
