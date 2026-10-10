@@ -156,12 +156,10 @@ goodix_cmd_set_policy (GoodixTransport *operation)
   guint8 command = GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command);
   const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
 
-  goodix_family (FPI_DEVICE_GOODIX53X5 (operation->dev))->protocol.command_budget (
-    command, &operation->ack_timeout_ms, &operation->response_timeout_ms);
+  operation->retry = goodix_family (FPI_DEVICE_GOODIX53X5 (operation->dev))->protocol.command_budget (
+    command, operation->expect_data, &operation->ack_timeout_ms, &operation->response_timeout_ms);
   operation->response_slot = policy && operation->expect_data ?
                              policy->response_slot : GOODIX_RESPONSE_NONE;
-  operation->retry = policy && policy->retry &&
-                     (operation->expect_data == (policy->response_slot != GOODIX_RESPONSE_NONE));
 }
 
 static const char *
@@ -213,7 +211,10 @@ goodix_cmd_retry (GoodixTransport *operation, GError *error)
   if (!operation->retry || operation->attempt != 1 ||
       (phase != GOODIX_TRANSPORT_SEND && phase != GOODIX_TRANSPORT_ACK &&
        !(operation->response_slot != GOODIX_RESPONSE_NONE && phase == GOODIX_TRANSPORT_RESPONSE)) ||
-      !goodix_cmd_native_zero (phase, error))
+      !(phase == GOODIX_TRANSPORT_SEND ?
+        (operation->record ? goodix_cmd_native_zero (phase, error) :
+         goodix_family (FPI_DEVICE_GOODIX53X5 (operation->dev))->protocol.retry_write (error)) :
+        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT)))
     return FALSE;
 
   g_autofree gchar *what = goodix_transport_describe (operation);

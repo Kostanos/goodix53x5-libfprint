@@ -213,11 +213,21 @@ goodix_gm168sec_check_firmware (const char *firmware)
 
 /* The vendor's MCU context waits 1500 ms for every ACK and every reply;
  * EC control alone gives its ACK 500 ms. */
-static void
-goodix_wrapped_command_budget (guint8 command, guint *ack_ms, guint *response_ms)
+static gboolean
+goodix_wrapped_command_budget (guint8 command, gboolean expect_data,
+                              guint *ack_ms, guint *response_ms)
 {
+  (void) expect_data;
   *ack_ms = command == 0xae ? 500 : 1500;
   *response_ms = 1500;
+  return TRUE;
+}
+
+static gboolean
+goodix_gm168sec_retry_write (const GError *error)
+{
+  (void) error;
+  return FALSE;
 }
 
 /* ACK flag 0x02, on any command, means the sensor lost its configuration
@@ -301,6 +311,7 @@ const GoodixFamily goodix_family_gm168sec = {
      * isolation on with mode 0 when a session starts. */
     .ec_on_payload = { 0x01, 0x00, 0x01 },
     .command_budget = goodix_wrapped_command_budget,
+    .retry_write = goodix_gm168sec_retry_write,
     .ack_timeout_waits_for_data = TRUE,
     .event = goodix_gm168sec_event,
     .reply_answers = goodix_gm168sec_reply_answers,

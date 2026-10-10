@@ -23,13 +23,27 @@
 
 /* The 53x5 native budgets: the command table, with fixed fallbacks for
  * commands it does not list. */
-static void
-goodix_htsec_command_budget (guint8 command, guint *ack_ms, guint *response_ms)
+static gboolean
+goodix_htsec_command_budget (guint8 command, gboolean expect_data,
+                             guint *ack_ms, guint *response_ms)
 {
   const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
 
   *ack_ms = policy ? policy->ack_ms : GOODIX_ACK_TIMEOUT;
   *response_ms = policy && policy->response_ms ? policy->response_ms : GOODIX_DATA_TIMEOUT;
+  return policy && policy->retry &&
+         (expect_data == (policy->response_slot != GOODIX_RESPONSE_NONE));
+}
+
+static gboolean
+goodix_htsec_retry_write (const GError *error)
+{
+  return error && error->domain == G_USB_DEVICE_ERROR &&
+         (error->code == G_USB_DEVICE_ERROR_TIMED_OUT ||
+          error->code == G_USB_DEVICE_ERROR_IO ||
+          error->code == G_USB_DEVICE_ERROR_FAILED ||
+          error->code == G_USB_DEVICE_ERROR_NOT_SUPPORTED ||
+          error->code == G_USB_DEVICE_ERROR_INTERNAL);
 }
 
 /* Returns @msg split into 64-byte writes. Continuation chunks prepend the
@@ -130,6 +144,7 @@ const GoodixFamily goodix_family_htsec = {
     .wake_payload_len = 2,
     .ec_on_payload = { 0x01, 0x01, 0x00 },
     .command_budget = goodix_htsec_command_budget,
+    .retry_write = goodix_htsec_retry_write,
     .ack_timeout_waits_for_data = FALSE,
     .event = goodix_htsec_event,
     .reply_answers = goodix_htsec_reply_answers,

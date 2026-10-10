@@ -59,9 +59,11 @@ typedef struct
   /* The EC-control payload that isolates the power button while the sensor
    * scans; every family ends isolation with three zero bytes. */
   guint8   ec_on_payload[3];
-  /* Sets the ACK and data budgets, in ms, of the command with wire byte
-   * @command. */
-  void   (*command_budget) (guint8 command, guint *ack_ms, guint *response_ms);
+  /* Sets the ACK and data budgets, in ms, and permits one timeout retry. */
+  gboolean (*command_budget) (guint8 command, gboolean expect_data,
+                               guint *ack_ms, guint *response_ms);
+  /* Checks whether a failed write may use the command's retry. */
+  gboolean (*retry_write) (const GError *error);
   /* TRUE where an ACK that does not come in time is not an error for a
    * command that expects data: the wait moves on to the data, as the
    * vendor's _IoHubExec does. FALSE retries the command. */
