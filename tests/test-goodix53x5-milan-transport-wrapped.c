@@ -519,9 +519,15 @@ command_session_end (FpDevice *dev)
   g_clear_object (&action_cancel_token);
 }
 
-/* Runs @ssm on the 533c @dev, answering as @sensor, and returns the commands
- * it wrote, as "cmd(payload length:first payload byte)," each, with its error
- * in @error. */
+static void
+restart_done (FpDevice *dev, GError *error, gpointer data)
+{
+  startup_done (NULL, dev, error);
+}
+
+/* Runs @ssm on the 533c @dev, or a channel restart when @ssm is NULL,
+ * answering as @sensor, and returns the commands it wrote, as
+ * "cmd(payload length:first payload byte)," each, with its error in @error. */
 static gchar *
 run_wrapped (FpDevice *dev, FpiSsm *ssm, const WrappedOpen *sensor, GError **error)
 {
@@ -531,7 +537,10 @@ run_wrapped (FpDevice *dev, FpiSsm *ssm, const WrappedOpen *sensor, GError **err
 
   command_session_begin (dev);
   startup_trace = g_string_new (NULL);
-  fpi_ssm_start (ssm, startup_done);
+  if (ssm)
+    fpi_ssm_start (ssm, startup_done);
+  else
+    goodix_start_gtls_restart (dev, restart_done, NULL);
   for (guint step = 0; !io.completions && step < 200; step++)
     {
       if (!self->transport)
@@ -945,6 +954,36 @@ test_wrapped_psk_refresh_survives_suspend (void)
   g_clear_object (&action_cancel_token);
 }
 
+/* Returns how many TLS requests a 533c whose sensor never sends its
+ * ClientHello gets from open (@restart unset) or a channel restart, which
+ * the sensor asked for when @reconnect is set. */
+static guint
+tls_requests (gboolean restart, gboolean reconnect)
+{
+  const WrappedOpen sensor = { .firmware = "GF5288_GM168SEC_APP_13016" };
+  g_autoptr(FpDevice) dev = wrapped_device_new ();
+  g_autoptr(GError) error = NULL;
+  g_autofree gchar *trace = NULL;
+  guint requests = 0;
+
+  FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested = reconnect;
+  trace = run_wrapped (dev, restart ? NULL : goodix_gtls_retry_new (dev), &sensor, &error);
+  for (const char *p = trace; (p = strstr (p, "d0,")); p++)
+    requests++;
+  return requests;
+}
+
+/* 533c makes the vendor's handshake attempts: one call and one retry at open
+ * and resume, one after a failed image read, at most two for a reconnect the
+ * sensor asked for. */
+static void
+test_wrapped_tls_attempts (void)
+{
+  g_assert_cmpuint (tls_requests (FALSE, FALSE), ==, 2);
+  g_assert_cmpuint (tls_requests (TRUE, FALSE), ==, 1);
+  g_assert_cmpuint (tls_requests (TRUE, TRUE), ==, 2);
+}
+
 static void
 register_wrapped_tests (void)
 {
@@ -983,6 +1022,7 @@ register_wrapped_tests (void)
   g_test_add_func ("/goodix53x5/wrapped/ec-on-payload", test_wrapped_ec_on_payload);
   g_test_add_func ("/goodix53x5/wrapped/power-loss-refreshes-psk",
                    test_wrapped_power_loss_refreshes_psk);
+  g_test_add_func ("/goodix53x5/wrapped/tls-attempts", test_wrapped_tls_attempts);
   g_test_add_func ("/goodix53x5/wrapped/psk-refresh-survives-suspend",
                    test_wrapped_psk_refresh_survives_suspend);
   g_test_add_func ("/goodix53x5/wrapped/d0-requests-reconnect",

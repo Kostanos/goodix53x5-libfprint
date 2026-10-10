@@ -652,6 +652,13 @@ static void
 startup_delay (FpiSsm *ssm, int state, int delay)
 {
   g_assert_nonnull (startup_trace);
+  if (delay == 10)
+    {
+      /* The pause between two handshake attempts. */
+      test_clock_us += delay * 1000LL;
+      fpi_ssm_jump_to_state_delayed (ssm, state, 0);
+      return;
+    }
   g_assert_nonnull (usb.pending);
   g_assert_cmpint (delay, ==, 100);
   startup_delays++;

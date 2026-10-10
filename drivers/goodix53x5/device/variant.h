@@ -66,6 +66,12 @@ typedef struct
   /* TRUE where starting a new secure-channel session drops the
    * finger-detect arm, so a scan arms again after a channel restart. */
   gboolean    channel_restart_disarms;
+  /* Handshake attempts open and resume make before failing. */
+  guint       channel_attempts;
+  /* Handshake attempts a restart after a failed image read makes. */
+  guint       channel_restart_attempts;
+  /* Handshake attempts a reconnect the sensor asked for makes. */
+  guint       channel_reconnect_attempts;
   /* TRUE where a D0 message from the sensor asks for a new secure-channel
    * session rather than carrying channel bytes. */
   gboolean    d0_requests_reconnect;

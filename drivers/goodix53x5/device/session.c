@@ -641,6 +641,8 @@ typedef enum {
 
 typedef struct {
   guint attempt;
+  /* Attempts before giving up. */
+  guint limit;
   GError *error;
   GoodixGtlsRestartDone restart_done;
   gpointer              restart_data;
@@ -651,6 +653,20 @@ goodix_gtls_retry_free (GoodixGtlsRetry *retry)
 {
   g_clear_error (&retry->error);
   g_free (retry);
+}
+
+static void goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev);
+
+/* Returns a new handshake retry SSM for open or resume. */
+static FpiSsm *
+goodix_gtls_retry_new (FpDevice *dev)
+{
+  GoodixGtlsRetry *retry = g_new0 (GoodixGtlsRetry, 1);
+  FpiSsm *ssm = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
+
+  retry->limit = goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->channel_attempts;
+  fpi_ssm_set_data (ssm, retry, (GDestroyNotify) goodix_gtls_retry_free);
+  return ssm;
 }
 
 static void
@@ -777,8 +793,7 @@ goodix_gtls_attempt_done (FpiSsm *attempt, FpDevice *dev, GError *error)
   /* deviceInit calls the three-attempt wrapper once more after failure, without
    * reset or PSK reload. Linux has no production-item cache to clear between
    * those groups. Each failed attempt, including the last, sleeps ten ms. */
-  fpi_ssm_jump_to_state_delayed (ssm,
-                                 retry->attempt < (retry->restart_done ? 3 : 6) ? 0 : 1, 10);
+  fpi_ssm_jump_to_state_delayed (ssm, retry->attempt < retry->limit ? 0 : 1, 10);
 }
 
 static void
@@ -839,6 +854,9 @@ goodix_start_gtls_restart (FpDevice *dev, GoodixGtlsRestartDone done,
   g_assert (!self->transport && !self->gtls_restart_active);
   self->gtls_restart_pending = FALSE;
   self->gtls_restart_active = TRUE;
+  retry->limit = self->reconnect_requested ?
+                 goodix_variant (self)->channel_reconnect_attempts :
+                 goodix_variant (self)->channel_restart_attempts;
   retry->restart_done = done;
   retry->restart_data = data;
   fpi_ssm_set_data (ssm, retry, (GDestroyNotify) goodix_gtls_retry_free);
@@ -1203,12 +1221,8 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             self->psk_write_verify_pending = FALSE;
           }
 
-        FpiSsm *sub = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
-
         self->open_gtls_failed = FALSE;
-        fpi_ssm_set_data (sub, g_new0 (GoodixGtlsRetry, 1),
-                          (GDestroyNotify) goodix_gtls_retry_free);
-        fpi_ssm_start_subsm (ssm, sub);
+        fpi_ssm_start_subsm (ssm, goodix_gtls_retry_new (dev));
       }
       break;
 
@@ -1698,11 +1712,7 @@ goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
       /* usbinterface!180020970 resume uses the same two three-attempt groups
        * as cold initialization, not the single group of the event restart.
        * Reuse only the handshake owner, with the already selected PSK. */
-      FpiSsm *sub = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
-
-      fpi_ssm_set_data (sub, g_new0 (GoodixGtlsRetry, 1),
-                        (GDestroyNotify) goodix_gtls_retry_free);
-      fpi_ssm_start_subsm (ssm, sub);
+      fpi_ssm_start_subsm (ssm, goodix_gtls_retry_new (dev));
     }
 }
 

@@ -1208,6 +1208,10 @@ const GoodixVariant goodix_variant_direct = {
   .restart_on_first_image_error = FALSE,
   .ack_reports_config_loss = FALSE,
   .replies_match_command = FALSE,
+  /* deviceInit runs the three-attempt wrapper twice; the event restart once. */
+  .channel_attempts = 6,
+  .channel_restart_attempts = 3,
+  .channel_reconnect_attempts = 3,
   .d0_requests_reconnect = FALSE,
   .command_budget = goodix_direct_command_budget,
   .read_psk_hash = goodix_read_psk_hash_direct,
