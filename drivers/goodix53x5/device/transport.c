@@ -1405,8 +1405,6 @@ goodix_transport_send_record (FpDevice           *dev,
 
   operation = goodix_transport_new (dev, GOODIX_TRANSPORT_SEND, done, data);
   operation->record = g_bytes_ref (record);
-  /* Like any command, a write that failed is retried once. */
-  operation->retry = TRUE;
   goodix_transport_send (operation);
 }
 
