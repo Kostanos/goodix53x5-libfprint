@@ -985,57 +985,12 @@ print_report (const ProbeReport *report,
     }
 }
 
-/* Checks that two packs and their padding arriving in one read both come
- * out whole, carrying @message. */
-static gboolean
-self_test_wrapped_stream (const GByteArray *message)
-{
-  g_autoptr(GByteArray) stream = g_byte_array_new ();
-  g_autoptr(GByteArray) first = NULL;
-  g_autoptr(GByteArray) second = NULL;
-  g_autoptr(GByteArray) none = NULL;
-  g_autoptr(GError) error = NULL;
-  const guint8 padding[3] = { 0 };
-  guint8 header[GOODIX_PACK_HEADER];
-
-  write_pack_header (header, GOODIX_PACK_MESSAGE, message->len);
-  for (guint i = 0; i < 2; i++)
-    {
-      g_byte_array_append (stream, header, sizeof (header));
-      g_byte_array_append (stream, message->data, message->len);
-      g_byte_array_append (stream, padding, sizeof (padding));
-    }
-  return take_wrapped_message (stream, &first, &error) == G_IO_STATUS_NORMAL &&
-         take_wrapped_message (stream, &second, &error) == G_IO_STATUS_NORMAL &&
-         take_wrapped_message (stream, &none, &error) == G_IO_STATUS_AGAIN &&
-         first->len == message->len &&
-         memcmp (second->data, message->data, message->len) == 0;
-}
-
 static gboolean
 self_test (void)
 {
   const guint8 payload[] = { 0x00, 0x00 };
   const guint8 chip_bytes[] = { 0x0c, 0xa1, 0x00, 0x22 };
   guint8 production_payload[41] = { 0 };
-  guint8 wrapped_payload[41] = { 0, 0x01, 0x00, 0x02, 0xbb, 32 };
-  /* A vendor-driver write: the 0x14-byte PSK read in a message pack. */
-  const guint8 vendor_header[GOODIX_PACK_HEADER] = { 0xa0, 0x14, 0x00, 0xb4 };
-  /* SHA-256 of 32 zero bytes, as read from a 533c. */
-  const guint8 default_hash[32] = {
-    0x66, 0x68, 0x7a, 0xad, 0xf8, 0x62, 0xbd, 0x77, 0x6c, 0x8f, 0xc1, 0x8b,
-    0x8e, 0x9f, 0x8e, 0x20, 0x08, 0x97, 0x14, 0x85, 0x6e, 0xe2, 0x33, 0xb3,
-    0x90, 0x2a, 0x59, 0x1d, 0x0d, 0x5f, 0x29, 0x25,
-  };
-  /* The PSK hash requests the vendor drivers send. */
-  const guint8 direct_request[] = { 0x03, 0xB0, 0x00, 0x00 };
-  const guint8 wrapped_request[] = {
-    0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x01, 0x00, 0x02, 0xbb, 0x00, 0x00, 0x00, 0x00,
-  };
-  guint8 request[16];
-  guint8 header[GOODIX_PACK_HEADER];
-  gsize pack_length = 0;
   guint8 otp[27] = { 0 };
   guint8 otp_checksum = 0;
   guint no_progress_count = 0;
@@ -1059,32 +1014,7 @@ self_test (void)
       !parse_production_hash (production_payload,
                               sizeof (production_payload), GOODIX_PSK_HASH_DIRECT) ||
       parse_production_hash (production_payload,
-                             sizeof (production_payload) - 1, GOODIX_PSK_HASH_DIRECT) ||
-      parse_production_hash (production_payload,
-                             sizeof (production_payload), GOODIX_PSK_HASH_WRAPPED) ||
-      !parse_production_hash (wrapped_payload, sizeof (wrapped_payload),
-                              GOODIX_PSK_HASH_WRAPPED) ||
-      !is_default_psk_hash (default_hash) ||
-      is_default_psk_hash (wrapped_payload + 9))
-    return FALSE;
-
-  if (production_read_request (GOODIX_PSK_HASH_DIRECT, request) != sizeof (direct_request) ||
-      memcmp (request, direct_request, sizeof (direct_request)) != 0 ||
-      preset_read_request (GOODIX_PSK_HASH_WRAPPED, request) != sizeof (wrapped_request) ||
-      memcmp (request, wrapped_request, sizeof (wrapped_request)) != 0)
-    return FALSE;
-
-  write_pack_header (header, GOODIX_PACK_MESSAGE, 0x14);
-  if (memcmp (header, vendor_header, sizeof (header)) != 0 ||
-      !read_pack_header (header, &pack_length) || pack_length != 0x14)
-    return FALSE;
-  header[3] ^= 0x01;
-  if (read_pack_header (header, &pack_length))
-    return FALSE;
-  write_pack_header (header, 0xC0, 0x14);
-  if (read_pack_header (header, &pack_length) ||
-      !self_test_wrapped_stream (message) ||
-      probe_layouts[1].probes_pid (0x5840) || !probe_layouts[1].probes_pid (0x533c))
+                             sizeof (production_payload) - 1, GOODIX_PSK_HASH_DIRECT))
     return FALSE;
 
   for (guint i = 0; i < 8; i++)

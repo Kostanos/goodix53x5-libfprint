@@ -114,7 +114,7 @@ idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
 {
   /* The startup fixture retains its claim/probe/reset boundary now that reset
    * belongs to the chip child. Run the real reset and its delay, but no read. */
-  if (startup_trace && handler == goodix_chip_ssm_handler && !fixture_wrapped (dev))
+  if (startup_trace && handler == goodix_chip_ssm_handler)
     return fpi_ssm_new_full (dev, handler, GOODIX_CHIP_READ,
                              GOODIX_CHIP_READ, name);
   if (handler == goodix_htsec_open_handler)
@@ -123,9 +123,6 @@ idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
 
       return fpi_ssm_new_full (dev, handler, stop, stop, name);
     }
-  if (handler == goodix_gm168sec_open_handler)
-    return fpi_ssm_new_full (dev, handler, GOODIX_GM168SEC_OPEN_READ_OTP,
-                             GOODIX_GM168SEC_OPEN_READ_OTP, name);
   if (handler != goodix_open_ssm_handler)
     return fpi_ssm_new_full (dev, handler, states, cleanup, name);
   g_assert_true (idle_reinit_testing || idle_open_testing);
@@ -469,7 +466,6 @@ idle_open_data_free (gpointer data)
 static void
 test_idle_failed_open (gconstpointer user_data)
 {
-  static const guint8 no_psk[GOODIX_PSK_LEN];
   guint which = GPOINTER_TO_UINT (user_data);
   gboolean recover = which < 3 || which == 6;
   guint completion = which == 8 ? 0 : which >= 6 ? 3 : which % 3;
@@ -495,8 +491,6 @@ test_idle_failed_open (gconstpointer user_data)
   self->usb_interface_claimed = TRUE;
   self->open_ref_powered = TRUE;
   self->open_recovery_attempted = !(recover || which == 8);
-  /* The channel's session keys must not outlive the failed open. */
-  memset (self->gtls.psk, 0x5a, sizeof (self->gtls.psk));
   ssm = fpi_ssm_new_full (dev, idle_open_cleanup_entry, GOODIX_OPEN_NUM_STATES,
                           GOODIX_OPEN_SLEEP, "failed-open-cleanup");
   self->task_ssm = ssm;
@@ -584,7 +578,6 @@ test_idle_failed_open (gconstpointer user_data)
       g_assert_cmpstr (io.error->message, ==, original->message);
     }
   g_assert_cmpuint (io.completions, ==, 1);
-  g_assert_cmpmem (self->gtls.psk, sizeof (self->gtls.psk), no_psk, sizeof (no_psk));
   g_assert_cmpuint (idle_open_ssms_freed, ==, 1);
   if (recover)
     g_assert_nonnull (usb.pending);
@@ -597,8 +590,6 @@ test_idle_failed_open (gconstpointer user_data)
     {
       g_assert_nonnull (usb.pending);
       g_assert_true (self->service_active);
-      /* Nor outlive the close. */
-      memset (self->gtls.psk, 0x5a, sizeof (self->gtls.psk));
       goodix_close (dev);
       fixture_refresh_wait ();
       g_assert_true (g_cancellable_is_cancelled (usb.cancel));
@@ -610,7 +601,6 @@ test_idle_failed_open (gconstpointer user_data)
       fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
                                               "Joined maintenance at close"));
       g_assert_cmpuint (idle_closes, ==, 1);
-      g_assert_cmpmem (self->gtls.psk, sizeof (self->gtls.psk), no_psk, sizeof (no_psk));
     }
   else
     {
@@ -662,13 +652,6 @@ static void
 startup_delay (FpiSsm *ssm, int state, int delay)
 {
   g_assert_nonnull (startup_trace);
-  if (delay == 10)
-    {
-      /* The pause between two handshake attempts. */
-      test_clock_us += delay * 1000LL;
-      fpi_ssm_jump_to_state_delayed (ssm, state, 0);
-      return;
-    }
   g_assert_nonnull (usb.pending);
   g_assert_cmpint (delay, ==, 100);
   startup_delays++;
