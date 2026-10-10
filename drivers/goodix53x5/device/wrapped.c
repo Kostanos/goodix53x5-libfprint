@@ -360,7 +360,6 @@ const GoodixVariant goodix_variant_wrapped = {
   /* 533c returns no firmware in APP mode, so nothing could restore it. */
   .provisionable = FALSE,
   .ack_timeout_waits_for_data = TRUE,
-  .channel_restart_disarms = TRUE,
   .restart_on_first_image_error = TRUE,
   .ack_reports_config_loss = TRUE,
   .replies_match_command = TRUE,

@@ -291,8 +291,10 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
       goodix_scan_request_stop (data, error);
       return;
     }
-  if (goodix_variant (FPI_DEVICE_GOODIX53X5 (dev))->channel_restart_disarms &&
-      !data->stop_requested)
+  /* Only a reconnect the sensor asked for arms afterwards, as the vendor's
+   * handler does. A restart after a failed image read only restarts the
+   * channel: that capture's own failure path armed again. */
+  if (FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested && !data->stop_requested)
     {
       data->dispatching = TRUE;
       fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_CHANNEL_REARM);
@@ -806,20 +808,11 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_CHANNEL_REARM:
-      /* A reconnect the sensor asked for always arms finger-down, as the
-       * vendor's handler does; otherwise arm again in the mode the restarted
-       * session dropped. */
-      if (self->reconnect_requested)
-        {
-          self->reconnect_requested = FALSE;
-          fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
-        }
-      if (fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_UP)
-        goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
-      else if (fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_DOWN)
-        goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
-      else
-        fpi_ssm_next_state (ssm);
+      /* A reconnect the sensor asked for arms finger-down whatever the scan
+       * waited for, as the vendor's handler does. */
+      self->reconnect_requested = FALSE;
+      fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+      goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
       break;
 
     case GOODIX_SCAN_COORD_ESD_DONE:

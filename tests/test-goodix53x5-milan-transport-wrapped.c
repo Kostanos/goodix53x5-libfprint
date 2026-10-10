@@ -155,12 +155,13 @@ record_state (FpiSsm *ssm, FpDevice *dev)
 }
 
 static int
-restarted_next_state (gboolean stop_requested)
+restarted_next_state (gboolean reconnect, gboolean stop_requested)
 {
   g_autoptr(FpDevice) dev = wrapped_device_new ();
   GoodixScanCoordinatorData data = { .stop_requested = stop_requested };
   int state = -1;
 
+  FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested = reconnect;
   data.ssm = fpi_ssm_new (dev, record_state, GOODIX_SCAN_COORD_NUM_STATES);
   fpi_ssm_set_data (data.ssm, &state, NULL);
   fpi_ssm_start (data.ssm, NULL);
@@ -170,13 +171,15 @@ restarted_next_state (gboolean stop_requested)
   return state;
 }
 
-/* After a 533c channel restart the scan arms again, unless it was stopped
- * meanwhile: then it takes the ordinary path, which ends the scan. */
+/* Only a channel restart the sensor asked for arms the scan again, unless it
+ * was stopped meanwhile: then it takes the ordinary path, which ends the
+ * scan. A restart after a failed read goes straight back to waiting. */
 static void
 test_wrapped_restart_rearm_yields_to_stop (void)
 {
-  g_assert_cmpint (restarted_next_state (FALSE), ==, GOODIX_SCAN_COORD_CHANNEL_REARM);
-  g_assert_cmpint (restarted_next_state (TRUE), ==, GOODIX_SCAN_COORD_WAIT_EVENT);
+  g_assert_cmpint (restarted_next_state (TRUE, FALSE), ==, GOODIX_SCAN_COORD_CHANNEL_REARM);
+  g_assert_cmpint (restarted_next_state (TRUE, TRUE), ==, GOODIX_SCAN_COORD_WAIT_EVENT);
+  g_assert_cmpint (restarted_next_state (FALSE, FALSE), ==, GOODIX_SCAN_COORD_WAIT_EVENT);
 }
 
 static unsigned int

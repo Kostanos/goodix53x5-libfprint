@@ -1204,7 +1204,6 @@ const GoodixVariant goodix_variant_direct = {
   .psk_hash_type = 0xB003,
   .provisionable = TRUE,
   .ack_timeout_waits_for_data = FALSE,
-  .channel_restart_disarms = FALSE,
   .restart_on_first_image_error = FALSE,
   .ack_reports_config_loss = FALSE,
   .replies_match_command = FALSE,
