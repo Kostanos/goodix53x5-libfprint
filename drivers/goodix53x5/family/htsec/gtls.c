@@ -120,8 +120,9 @@ goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 }
 
 FpiSsm *
-goodix_gtls_attempt_new (FpDevice *dev)
+goodix_gtls_attempt_new (FpDevice *dev, GoodixChannelReason reason)
 {
+  (void) reason;
   return fpi_ssm_new (dev, goodix_gtls_ssm_handler, GOODIX_GTLS_NUM_STATES);
 }
 

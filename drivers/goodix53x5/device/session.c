@@ -631,6 +631,7 @@ goodix_open_identify_chip (FpiSsm *ssm, FpDevice *dev, gboolean initial_reset_re
 
 typedef struct {
   guint attempt;
+  GoodixChannelReason reason;
   /* Attempts before giving up. */
   guint limit;
   GError *error;
@@ -725,7 +726,7 @@ goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
     }
   g_clear_error (&retry->error);
   retry->attempt++;
-  FpiSsm *attempt = goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->channel.attempt_new (dev);
+  FpiSsm *attempt = goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->channel.attempt_new (dev, retry->reason);
 
   fpi_ssm_set_data (attempt, ssm, NULL);
   fpi_ssm_start (attempt, goodix_gtls_attempt_done);
@@ -756,6 +757,7 @@ goodix_start_gtls_restart (FpDevice *dev, GoodixGtlsRestartDone done,
   GoodixGtlsRetry *retry = fpi_ssm_get_data (ssm);
 
   g_assert (!self->transport && !self->gtls_restart_active);
+  retry->reason = self->reconnect_requested ? GOODIX_CHANNEL_RECONNECT : GOODIX_CHANNEL_FAILED_READ;
   self->gtls_restart_pending = FALSE;
   self->gtls_restart_active = TRUE;
   retry->restart_done = done;

@@ -132,13 +132,20 @@ typedef struct
 } GoodixChannelAttempts;
 
 /* The family's secure channel. */
+typedef enum
+{
+  GOODIX_CHANNEL_START,
+  GOODIX_CHANNEL_FAILED_READ,
+  GOODIX_CHANNEL_RECONNECT,
+} GoodixChannelReason;
+
 typedef struct
 {
   /* The channel's name in logs. */
   const char           *name;
   GoodixChannelAttempts attempts;
   /* Returns a new SSM for one handshake attempt. */
-  FpiSsm             *(*attempt_new) (FpDevice *dev);
+  FpiSsm             *(*attempt_new) (FpDevice *dev, GoodixChannelReason reason);
   /* Decrypts an encrypted image payload into raw12 bytes in @out. */
   GoodixFrameStatus   (*decrypt_frame) (FpiDeviceGoodix53x5 *self,
                                         const guint8 *payload, gsize len,

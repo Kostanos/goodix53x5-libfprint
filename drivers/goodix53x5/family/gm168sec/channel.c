@@ -178,10 +178,21 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     }
 }
 
-FpiSsm *
-goodix_tls_attempt_new (FpDevice *dev)
+static void
+goodix_tls_read_restart_handler (FpiSsm *ssm, FpDevice *dev)
 {
-  return fpi_ssm_new (dev, goodix_tls_ssm_handler, GOODIX_TLS_NUM_STATES);
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_TLS_PSK_REFRESH)
+    fpi_ssm_jump_to_state (ssm, GOODIX_TLS_REQUEST);
+  else
+    goodix_tls_ssm_handler (ssm, dev);
+}
+
+FpiSsm *
+goodix_tls_attempt_new (FpDevice *dev, GoodixChannelReason reason)
+{
+  return fpi_ssm_new (dev, reason == GOODIX_CHANNEL_FAILED_READ ?
+                      goodix_tls_read_restart_handler : goodix_tls_ssm_handler,
+                      GOODIX_TLS_NUM_STATES);
 }
 
 /* An OpenSSL session is dead after a failed record, so every undecodable

@@ -26,7 +26,7 @@ GError *goodix_gm168sec_check_firmware (const char *firmware);
 FpiSsm *goodix_gm168sec_open_new (FpDevice *dev);
 
 /* Returns a new SSM for one TLS handshake attempt. */
-FpiSsm *goodix_tls_attempt_new (FpDevice *dev);
+FpiSsm *goodix_tls_attempt_new (FpDevice *dev, GoodixChannelReason reason);
 /* Decrypts the TLS records of an image pack into raw12 bytes in @out. */
 GoodixFrameStatus goodix_decrypt_frame_tls (FpiDeviceGoodix53x5 *self,
                                             const guint8 *payload, gsize len,

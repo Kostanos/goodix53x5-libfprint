@@ -18,7 +18,7 @@ GError *goodix_htsec_check_firmware (const char *firmware);
 FpiSsm *goodix_htsec_open_new (FpDevice *dev);
 
 /* Returns a new SSM for one GTLS handshake attempt. */
-FpiSsm *goodix_gtls_attempt_new (FpDevice *dev);
+FpiSsm *goodix_gtls_attempt_new (FpDevice *dev, GoodixChannelReason reason);
 /* Decrypts a GTLS image payload into raw12 bytes in @out. */
 GoodixFrameStatus goodix_decrypt_frame_gtls (FpiDeviceGoodix53x5 *self,
                                              const guint8 *payload, gsize len,
