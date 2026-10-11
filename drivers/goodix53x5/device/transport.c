@@ -786,10 +786,14 @@ goodix_rx_cell (GoodixTransport *operation,
         switch (goodix_family (self)->protocol.event (category, command, payload, payload_len))
           {
           case GOODIX_SENSOR_EVENT_CONFIG_LOST:
+            /* Every ACK reports the loss until a restore; only the first is a
+             * new power loss, after which the next handshake checks the PSK. */
             if (!self->config_lost)
-              fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
+              {
+                fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
+                self->psk_refresh_pending = TRUE;
+              }
             self->config_lost = TRUE;
-            self->psk_refresh_pending = TRUE;
             if (!self->config_restore_active)
               self->config_restore_pending = TRUE;
             /* A scan waiting for a finger restores the configuration first. */

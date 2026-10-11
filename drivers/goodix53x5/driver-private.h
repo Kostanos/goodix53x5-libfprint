@@ -196,8 +196,9 @@ struct _FpiDeviceGoodix53x5
   /* The selected reconnect arms down before any queued reconnect starts. */
   gboolean reconnect_requested;
   guint reconnect_pending;
-  /* Open/resume and reconnect check a pending PSK hash; failed-read recovery
-   * retains it. Cleared only after a passed check, including across suspend. */
+  /* Set by the first ACK reporting a configuration loss; open/resume and
+   * reconnect check the PSK hash while it is set, failed-read recovery keeps
+   * it. Cleared only after a passed check, including across suspend. */
   gboolean psk_refresh_pending;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   guint16 manual_touch;
