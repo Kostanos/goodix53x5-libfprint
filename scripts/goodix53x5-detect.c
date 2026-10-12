@@ -19,6 +19,12 @@
 #define GOODIX_PACK_FAMILY_TLS 0xb
 #define GOODIX_PSK_HASH_DIRECT 0xB003
 #define GOODIX_PSK_HASH_WRAPPED 0xbb020001
+#define GOODIX_PSK_LEN 32
+/* smell: the path and parse_psk_file mirror the driver's goodix_load_psk
+ * (device/session.c), kept so the detector stays one self-contained file.
+ * Fix if the detector ever builds against the driver tree. */
+#define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
+#define GOODIX_GUIDE "WINDOWS-DUAL-BOOT.md"
 #define GOODIX_TIMEOUT_MS 2000
 #define GOODIX_MAX_MESSAGE (64 * 1024)
 #define MILAN_CHIP_FAMILY_MASK 0xffffff00u
@@ -32,7 +38,39 @@ typedef enum
   PROBE_COMPATIBLE,
   PROBE_INCOMPATIBLE,
   PROBE_INCONCLUSIVE,
+  /* Supported, but the driver can't open it until the reason's steps are done. */
+  PROBE_NEEDS_SETUP,
 } ProbeResult;
+
+/* What a supported sensor needs before the driver can open it; each has its
+ * own instructions for the user. */
+typedef enum
+{
+  /* Windows' driver left it in the bootloader with a new key. */
+  SETUP_FINISH_WINDOWS_UPDATE,
+  /* It holds Windows' key, and none is imported. */
+  SETUP_IMPORT_KEY,
+  /* Windows has set a new key since the import. */
+  SETUP_REIMPORT_KEY,
+  /* It was reset to the all-zero key, and an import is left behind. */
+  SETUP_REMOVE_STALE_KEY,
+} SetupStep;
+
+/* A GTLS pre-shared key, typed apart from the SHA-256 hashes the sensor
+ * reports of one. */
+typedef struct
+{
+  guint8 bytes[GOODIX_PSK_LEN];
+} Psk;
+
+/* The key the driver opens the sensor with. */
+typedef struct
+{
+  Psk      key;
+  /* True if it comes from GOODIX_PSK_STATE_FILE; false for the all-zero
+   * default, which the advice for a mismatch depends on. */
+  gboolean imported;
+} DriverPsk;
 
 typedef struct _Probe Probe;
 
@@ -65,9 +103,12 @@ typedef struct
   /* Writes the request reading @type into @request; returns its length. */
   gsize       (*psk_hash_request) (guint32 type,
                                    guint8  request[16]);
-  /* TRUE where the driver never provisions the sensor, so it must hold the
-   * all-zero PSK. */
-  gboolean      requires_default_psk;
+  /* TRUE where the driver never provisions the sensor, so it must already hold
+   * the key the driver uses: the imported one, or else the all-zero PSK. */
+  gboolean      requires_driver_psk;
+  /* Part of the firmware version while the sensor runs its bootloader, where
+   * the rest of the probe gets no replies; NULL where unknown. */
+  const gchar  *bootloader_mark;
 } ProbeLayout;
 
 /* The device being probed and how to reach it. */
@@ -509,7 +550,8 @@ static const ProbeLayout probe_layouts[] = {
     .reset_replies = TRUE,
     .psk_hash_type = GOODIX_PSK_HASH_WRAPPED,
     .psk_hash_request = preset_read_request,
-    .requires_default_psk = TRUE,
+    .requires_driver_psk = TRUE,
+    .bootloader_mark = "_IAP_",
   },
 };
 
@@ -705,18 +747,147 @@ parse_production_hash (const guint8 *payload,
   return payload + 9;
 }
 
-/* Checks whether @hash is the SHA-256 of the all-zero PSK sensors ship with. */
+/* Checks whether @hash is the SHA-256 of @psk. */
 static gboolean
-is_default_psk_hash (const guint8 *hash)
+is_psk_hash (const guint8 *hash,
+             const Psk    *psk)
 {
-  const guint8 psk[32] = { 0 };
   g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
   guint8 expected[32];
   gsize expected_length = sizeof (expected);
 
-  g_checksum_update (sha, psk, sizeof (psk));
+  g_checksum_update (sha, psk->bytes, sizeof (psk->bytes));
   g_checksum_get_digest (sha, expected, &expected_length);
   return memcmp (hash, expected, sizeof (expected)) == 0;
+}
+
+/* Writes the key in an imported key file's @contents into @psk. Returns FALSE
+ * unless it is 64 hexadecimal digits and optional whitespace, as the driver
+ * requires. */
+static gboolean
+parse_psk_file (const gchar *contents,
+                gsize        length,
+                Psk         *psk)
+{
+  while (length > 0 && g_ascii_isspace (contents[length - 1]))
+    length--;
+  if (length != GOODIX_PSK_LEN * 2)
+    return FALSE;
+  for (gsize i = 0; i < GOODIX_PSK_LEN; i++)
+    {
+      gint high = g_ascii_xdigit_value (contents[i * 2]);
+      gint low = g_ascii_xdigit_value (contents[i * 2 + 1]);
+
+      if (high < 0 || low < 0)
+        return FALSE;
+      psk->bytes[i] = (high << 4) | low;
+    }
+  return TRUE;
+}
+
+/* Reads the key the driver opens the sensor with into @psk: the imported one,
+ * or else the all-zero PSK. Fails when the key file can't be read or parsed,
+ * as the driver's open does. */
+static gboolean
+read_driver_psk (DriverPsk *psk,
+                 GError   **error)
+{
+  g_autofree gchar *contents = NULL;
+  g_autoptr(GError) read_error = NULL;
+  gsize length;
+
+  *psk = (DriverPsk) { 0 };
+  if (!g_file_get_contents (GOODIX_PSK_STATE_FILE, &contents, &length, &read_error))
+    {
+      if (g_error_matches (read_error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
+        return TRUE;
+      g_propagate_prefixed_error (error, g_steal_pointer (&read_error),
+                                  "Can't read the imported key: ");
+      return FALSE;
+    }
+  if (!parse_psk_file (contents, length, &psk->key))
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                   "%s must contain exactly 64 hexadecimal digits; the driver "
+                   "won't open the sensor with it", GOODIX_PSK_STATE_FILE);
+      return FALSE;
+    }
+  psk->imported = TRUE;
+  return TRUE;
+}
+
+/* Checks whether the sensor whose key hashes to @sensor_hash holds a key
+ * other than @driver's, and if so sets @step to what fixes it. */
+static gboolean
+psk_needs_setup (const guint8    *sensor_hash,
+                 const DriverPsk *driver,
+                 SetupStep       *step)
+{
+  const Psk zero_psk = { 0 };
+
+  if (is_psk_hash (sensor_hash, &driver->key))
+    return FALSE;
+  if (!driver->imported)
+    *step = SETUP_IMPORT_KEY;
+  else if (is_psk_hash (sensor_hash, &zero_psk))
+    *step = SETUP_REMOVE_STALE_KEY;
+  else
+    *step = SETUP_REIMPORT_KEY;
+  return TRUE;
+}
+
+/* Returns the instructions the report prints for @step. */
+static const gchar *
+setup_instructions (SetupStep step)
+{
+  switch (step)
+    {
+    case SETUP_FINISH_WINDOWS_UPDATE:
+      return "The sensor is in its bootloader: Dell's Windows driver has set\n"
+             "a new key and installs the firmware the next time it starts.\n"
+             "Start Windows once more and sign in with your fingerprint, then\n"
+             "run this check again. If Windows is gone, reset the sensor with\n"
+             "Dell's Linux driver, as " GOODIX_GUIDE " describes.";
+    case SETUP_IMPORT_KEY:
+      return "The sensor has a key set by Dell's Windows driver, and this driver\n"
+             "never changes the key on this sensor.\n"
+             "- If that Windows installation still exists, import its key as\n"
+             "  " GOODIX_GUIDE " describes.\n"
+             "- If it is gone, the key can't be recovered: reset the sensor to the\n"
+             "  all-zero key with Dell's Linux driver, as " GOODIX_GUIDE "\n"
+             "  describes.";
+    case SETUP_REIMPORT_KEY:
+      return "The sensor's key is not the one imported at " GOODIX_PSK_STATE_FILE ":\n"
+             "Windows has set a new key since. Import it again as\n"
+             GOODIX_GUIDE " describes, adding --replace.";
+    case SETUP_REMOVE_STALE_KEY:
+      return "The sensor has the all-zero key, but another key is imported at\n"
+             GOODIX_PSK_STATE_FILE ", so the driver will refuse it. Remove that\n"
+             "file, or, if Windows has used the sensor since, sign in there once\n"
+             "and import its new key.";
+    }
+  g_assert_not_reached ();
+}
+
+/* Marks @report as supported but needing @step first, with its instructions
+ * in @error. */
+static void
+set_needs_setup (ProbeReport *report,
+                 SetupStep    step,
+                 GError     **error)
+{
+  report->result = PROBE_NEEDS_SETUP;
+  g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                       setup_instructions (step));
+}
+
+/* Checks whether @firmware is the version @layout's sensor reports from its
+ * bootloader. */
+static gboolean
+is_bootloader_firmware (const ProbeLayout *layout,
+                        const gchar       *firmware)
+{
+  return layout->bootloader_mark && strstr (firmware, layout->bootloader_mark);
 }
 
 static void
@@ -757,7 +928,11 @@ probe_device (GUsbDevice  *device,
   gsize payload_length;
   gboolean opened = FALSE;
   gboolean claimed = FALSE;
-  gboolean protocol_started = FALSE;
+  /* True once the sensor answers as its application, which is put to sleep
+   * at the end; its bootloader is left alone. */
+  gboolean sleep_at_exit = FALSE;
+  DriverPsk driver_psk;
+  SetupStep setup_step;
 
   report->result = PROBE_INCONCLUSIVE;
   probe.layout = report->layout = find_usb_layout (device, &error);
@@ -782,7 +957,7 @@ probe_device (GUsbDevice  *device,
                        probe.layout->ping_payload_length, FALSE, &error);
   if (!reply)
     goto out;
-  protocol_started = TRUE;
+  sleep_at_exit = TRUE;
 
   g_clear_pointer (&reply, g_byte_array_unref);
   reply = run_command (&probe, 0x0A, 0x04, firmware_payload,
@@ -791,6 +966,14 @@ probe_device (GUsbDevice  *device,
                               &payload_length, &error))
     goto out;
   report->firmware = sanitize_firmware (payload, payload_length);
+  if (is_bootloader_firmware (probe.layout, report->firmware))
+    {
+      /* The bootloader acknowledges the reset and chip-ID read without
+       * replying, so the probe stops here. */
+      sleep_at_exit = FALSE;
+      set_needs_setup (report, SETUP_FINISH_WINDOWS_UPDATE, &error);
+      goto out;
+    }
 
   g_clear_pointer (&reply, g_byte_array_unref);
   reply = run_command (&probe, 0x0A, 0x01, probe.layout->reset_payload,
@@ -853,19 +1036,21 @@ probe_device (GUsbDevice  *device,
                            "PSK hash production record has an unexpected format");
       goto out;
     }
-  if (probe.layout->requires_default_psk && !is_default_psk_hash (psk_hash))
+  if (probe.layout->requires_driver_psk)
     {
-      g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                           "The sensor's PSK is not the all-zero default; the driver "
-                           "never writes a PSK to this sensor, so it works only "
-                           "with the matching key imported");
-      goto out;
+      if (!read_driver_psk (&driver_psk, &error))
+        goto out;
+      if (psk_needs_setup (psk_hash, &driver_psk, &setup_step))
+        {
+          set_needs_setup (report, setup_step, &error);
+          goto out;
+        }
     }
 
   report->result = PROBE_COMPATIBLE;
 
 out:
-  if (protocol_started)
+  if (sleep_at_exit)
     {
       g_autoptr(GByteArray) sleep_reply = NULL;
 
@@ -975,6 +1160,10 @@ print_report (const ProbeReport *report,
       if (report->reason)
         g_print ("%s\n", report->reason);
       break;
+    case PROBE_NEEDS_SETUP:
+      print_result ("\033[1;33m", SYMBOL_WARN, "SUPPORTED - SETUP NEEDED FIRST");
+      g_print ("%s\n", report->reason);
+      break;
     case PROBE_INCONCLUSIVE:
       print_result ("\033[1;33m", SYMBOL_WARN, "INCONCLUSIVE");
       if (report->reason)
@@ -995,6 +1184,19 @@ self_test (void)
   guint8 otp_checksum = 0;
   guint no_progress_count = 0;
   ProbeReport cleanup_report = { .result = PROBE_COMPATIBLE };
+  /* SHA-256 of the all-zero PSK, as the 533c reports it. */
+  const guint8 zero_psk_hash[32] = {
+    0x66, 0x68, 0x7a, 0xad, 0xf8, 0x62, 0xbd, 0x77, 0x6c, 0x8f, 0xc1, 0x8b,
+    0x8e, 0x9f, 0x8e, 0x20, 0x08, 0x97, 0x14, 0x85, 0x6e, 0xe2, 0x33, 0xb3,
+    0x90, 0x2a, 0x59, 0x1d, 0x0d, 0x5f, 0x29, 0x25,
+  };
+  const gchar *psk_line = "00000000000000000000000000000000"
+                          "000000000000000000000000000000ff\n";
+  Psk psk;
+  guint8 other_hash[32];
+  DriverPsk zero = { 0 };
+  DriverPsk imported = { .imported = TRUE };
+  SetupStep step;
   g_autoptr(GByteArray) message = build_message (0x0A, 0x04, payload,
                                                  sizeof (payload));
   g_autoptr(GError) error = NULL;
@@ -1015,6 +1217,29 @@ self_test (void)
                               sizeof (production_payload), GOODIX_PSK_HASH_DIRECT) ||
       parse_production_hash (production_payload,
                              sizeof (production_payload) - 1, GOODIX_PSK_HASH_DIRECT))
+    return FALSE;
+
+  if (!parse_psk_file (psk_line, strlen (psk_line), &psk) || psk.bytes[31] != 0xff ||
+      parse_psk_file (psk_line, 63, &psk) ||
+      parse_psk_file ("g0000000000000000000000000000000"
+                      "00000000000000000000000000000000", 64, &psk))
+    return FALSE;
+  psk.bytes[31] = 0;
+  if (!is_psk_hash (zero_psk_hash, &psk))
+    return FALSE;
+  psk.bytes[31] = 0xff;
+  if (is_psk_hash (zero_psk_hash, &psk))
+    return FALSE;
+
+  /* A hash of no key the test uses stands in for Windows' key. */
+  memcpy (other_hash, zero_psk_hash, sizeof (other_hash));
+  other_hash[0] ^= 0x01;
+  imported.key = psk;
+  if (psk_needs_setup (zero_psk_hash, &zero, &step) ||
+      !psk_needs_setup (other_hash, &zero, &step) || step != SETUP_IMPORT_KEY ||
+      !psk_needs_setup (other_hash, &imported, &step) || step != SETUP_REIMPORT_KEY ||
+      !psk_needs_setup (zero_psk_hash, &imported, &step) ||
+      step != SETUP_REMOVE_STALE_KEY)
     return FALSE;
 
   for (guint i = 0; i < 8; i++)
