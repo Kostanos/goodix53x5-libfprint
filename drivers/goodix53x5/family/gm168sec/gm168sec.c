@@ -321,6 +321,18 @@ goodix_gm168sec_rearm_after_capture (FpiDeviceGoodix53x5 *self)
   return !self->psk_refresh_pending;
 }
 
+/* Every ACK reports the loss until a restore; only the first is a new power
+ * loss, after which the next handshake checks the PSK. Dell's drivers set
+ * the flag on every such ACK. Keeping the first-loss rule stops later ACKs
+ * setting it again after the check, which would leave a failed capture
+ * unarmed. */
+static void
+goodix_gm168sec_config_lost (FpiDeviceGoodix53x5 *self)
+{
+  if (!self->config_lost)
+    self->psk_refresh_pending = TRUE;
+}
+
 static gboolean
 goodix_gm168sec_notice_irq (FpiDeviceGoodix53x5 *self, const guint8 *payload, gsize len)
 {
@@ -416,6 +428,7 @@ const GoodixFamily goodix_family_gm168sec = {
     .image_error = goodix_tls_image_error,
     .rearm_after_capture = goodix_gm168sec_rearm_after_capture,
     .restart_disarms = TRUE,
+    .config_lost = goodix_gm168sec_config_lost,
     .discard = goodix_tls_discard,
   },
   .open_new = goodix_gm168sec_open_new,

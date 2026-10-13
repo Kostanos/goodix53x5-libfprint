@@ -782,17 +782,15 @@ goodix_rx_cell (GoodixTransport *operation,
           payload[0] == GOODIX_PROTO_CMD_BYTE (self->transport->cmd.category,
                                               self->transport->cmd.command))
         self->transport->ack_status = payload[1];
+      /* Only 533c reports events; goodix_htsec_event always returns NONE. */
       if (self->reply_valid)
         switch (goodix_family (self)->protocol.event (category, command, payload, payload_len))
           {
           case GOODIX_SENSOR_EVENT_CONFIG_LOST:
-            /* Every ACK reports the loss until a restore; only the first is a
-             * new power loss, after which the next handshake checks the PSK. */
             if (!self->config_lost)
-              {
-                fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
-                self->psk_refresh_pending = TRUE;
-              }
+              fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
+            if (goodix_family (self)->channel.config_lost)
+              goodix_family (self)->channel.config_lost (self);
             self->config_lost = TRUE;
             if (!self->config_restore_active)
               self->config_restore_pending = TRUE;

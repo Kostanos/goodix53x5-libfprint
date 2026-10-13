@@ -159,6 +159,9 @@ typedef struct
   /* TRUE where starting a new session drops the finger-detect arm, so a
    * restart still pending runs before an arm. */
   gboolean              restart_disarms;
+  /* Notes an ACK reporting lost configuration, before the shared loss state
+   * changes; NULL where the channel keeps no state for it. */
+  void                (*config_lost) (FpiDeviceGoodix53x5 *self);
   /* Forgets the session and its keys when the device closes; NULL where
    * the channel keeps nothing beyond the shared PSK. */
   void                (*discard) (FpiDeviceGoodix53x5 *self);

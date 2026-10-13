@@ -320,7 +320,8 @@ goodix_scan_restarted_before_arm (FpDevice *dev, GError *error, gpointer user_da
 }
 
 /* Serialize a pending restart before arming on the replacement session.
- * D0 selects its own down-arm; a failed read keeps the capture continuation. */
+ * D0 selects its own down-arm; a failed read keeps the capture continuation.
+ * Inert for 53x5: it requests no reconnects and its restarts do not disarm. */
 static gboolean
 goodix_scan_restart_before_arm (FpiSsm *ssm, FpDevice *dev)
 {

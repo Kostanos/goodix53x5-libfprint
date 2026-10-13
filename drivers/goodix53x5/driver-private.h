@@ -188,6 +188,8 @@ struct _FpiDeviceGoodix53x5
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;
   gboolean image_response_failed;
+  /* 533c only, from its CONFIG_LOST and RECONNECT events; 53x5 never sets
+   * the fields below up to psk_refresh_pending. */
   /* Wrapped ACK loss state; a successful download clears it only after the
    * independent loss notification has been serviced. */
   gboolean config_lost;
@@ -196,9 +198,9 @@ struct _FpiDeviceGoodix53x5
   /* The selected reconnect arms down before any queued reconnect starts. */
   gboolean reconnect_requested;
   guint reconnect_pending;
-  /* Set by the first ACK reporting a configuration loss; open/resume and
-   * reconnect check the PSK hash while it is set, failed-read recovery keeps
-   * it. Cleared only after a passed check, including across suspend. */
+  /* Set by the 533c channel's config_lost hook; open/resume and reconnect
+   * check the PSK hash while it is set, failed-read recovery keeps it.
+   * Cleared only after a passed check, including across suspend. */
   gboolean psk_refresh_pending;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   guint16 manual_touch;

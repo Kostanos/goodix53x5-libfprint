@@ -226,6 +226,7 @@ const GoodixFamily goodix_family_htsec = {
     .image_error = goodix_gtls_image_error,
     .rearm_after_capture = goodix_htsec_rearm_after_capture,
     .restart_disarms = FALSE,
+    .config_lost = NULL,
     .discard = goodix_gtls_discard,
   },
   .open_new = goodix_htsec_open_new,
