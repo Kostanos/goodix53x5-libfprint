@@ -265,6 +265,13 @@ before and after.
 
    The image can be removed with `podman rmi goodix-tod-reset`.
 
+On Arch, the AUR packages the same driver as `libfprint-2-tod1-xps9300-bin`,
+on top of `libfprint-tod`. Its library is identical to the one in Dell's
+package apart from stripped debug notes, and it opens the 533c when built and
+run in an Arch container. Installed on the host, though, it replaces this
+driver's packages and the distribution's libfprint until it is removed again,
+so the Podman steps above are the simpler route.
+
 If you install Windows again later, Dell's Windows driver sets its own key
 again on its first start. The sensor then needs the
 [import](#533c-windows-key-import), or this reset if Windows is gone again.
