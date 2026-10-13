@@ -186,7 +186,7 @@ goodix_tls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
         fpi_ssm_mark_completed (ssm);
       else if (!goodix_tls_handshake_pending (self->tls))
         fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
-                              FP_DEVICE_ERROR_PROTO, "TLS handshake did not finish in ten steps"));
+                              FP_DEVICE_ERROR_PROTO, "TLS handshake did not finish in ten empty waits"));
       else
         fpi_ssm_jump_to_state (ssm, GOODIX_TLS_RECV);
       break;
