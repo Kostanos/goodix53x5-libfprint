@@ -98,12 +98,72 @@ selected by payload byte zero: index `(ack_command>>4)*8 +
 because a different command is blocked. Late ACKs therefore replace their own
 slot without completing another command's ACK or data wait.
 
+For profile 9, the ACK parser does not interpret status bit one as a global
+power/configuration-loss event, set a pending key-refresh flag, or invalidate
+selected PSK byte `0x1800607bc`. It writes the full status on every admitted ACK.
+The down/up arm owner `0x180005a60` separately tests its returned status with
+`(status & 3) == 3`, downloads configuration, and repeats that arm. This is a
+per-arm result predicate, not a first-loss transition. Other ACKs do not select
+that repair merely because their status has bit one set.
+
+The independent FDT parser `0x180005b80` publishes CONFIG event `0x14` for each
+unrecognized nonmanual IRQ, without a previous-loss predicate. Its shared event
+slot coalesces publications. Worker `0x18000df20` dispatches action 3 only when
+requested mode is not two; profile-9 owner `0x180015710` downloads configuration
+and arms down even after ordinary download failure. Neither this route nor the
+ACK-status repair refreshes the PSK or restarts GTLS. Selected-key retention and
+session-key replacement are owned separately by
+[`production_get_psk` and the handshake wrapper](usbinterface-FUN_180025400.md#initialization-and-re-establishment-ownership).
+
+`DataFromDevice` forwards every category-3 subcommand to that FDT parser.
+Only subcommand three selects manual publication; all others select the same
+IRQ classification, including CONFIG for an unrecognized IRQ. The Linux
+`device/transport.c:goodix_rx_cell` admits only subcommands one and two to
+event classification, and `device/commands.c:goodix_cmd_parse_fdt_event` requires
+one of those commands. Other nonmanual subcommands cannot publish CONFIG there.
+The native dispatch and parser take no payload length; the Linux exact
+28-byte FDT payload check has no native predicate.
+
 `0x18001b4a0` creates selectors 0–6 with
 `CreateEventW(NULL,FALSE,FALSE,NULL)`: they are initially clear, auto-reset
 events. Multiple publications coalesce; successful wait consumes the signal,
 not the cached bytes. Protocol initialization publishes the initialized byte
 only after creating all seven handles. Failure closes created handles and
 replaces those entries with -1.
+
+## Profile-9 command retry eligibility
+
+Neither `SendDataToDeviceEx` nor `SendDataToDevice` repeats a transaction.
+The profile-9 command wrappers select the repeat: a zero transaction result
+permits one identical second transaction, not an unbounded retry. A missing
+ACK ends the transaction before its response wait; a response timeout also
+returns zero. The same wrapper predicate covers write failure. A nonzero
+transaction result prevents that repeat, including odd ACK statuses other
+than one. Response-content rejection after transaction success is separate.
+
+| Wire commands used by the mapped profile-9 path | Wrapper | Repeat on zero |
+| --- | --- | --- |
+| `00`, `32`, `34`, `36`, `60` | `0x180019ec8`, mode/arm/manual/sleep | Once |
+| `90` | `0x18001aed8`, configuration download | Once |
+| `a8` | `0x18001b15c`, firmware version | Once |
+| `82` | `0x18001a604`, sized register read | Once |
+| `a6` | `0x18001b2e0`, OTP read | Once |
+| `e4`, `e2` | `0x18001b9c4`, `0x18001c084`, production read/write | Once |
+| `20` | `0x180019ec8`, image request | None |
+| `a2` | `0x18001b6c8`, reset | None |
+| `ae` | `0x18001afec`, EC control | None |
+| `d2` | `0x18001c5a0`, MCU send | None |
+
+The `d2` MCU send carries both the GTLS `ff01` opening and `ff03`
+verification. Its failed ACK/write ends the handshake attempt; the independent
+three-attempt initializer may start a new client with fresh randoms. It does
+not resend the opening inside the same attempt. See the
+[GTLS sender and retry owner](usbinterface-FUN_180025400.md).
+
+The current source keeps this eligibility in the `device/transport.c`
+`command_policies` table, applied by `goodix_cmd_set_policy`.
+`goodix_cmd_native_zero` admits receive timeout and ordinary write failure;
+`goodix_cmd_retry` enforces the two-transaction limit.
 
 ## Independent USB Receive Boundary
 

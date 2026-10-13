@@ -92,6 +92,37 @@ An MCU response can therefore be retained while the sender is still waiting
 for its ACK. The handshake reads the retained bytes after the send returns;
 `FUN_18001c2f0` calls the ring reader at `0x18001c547`.
 
+### Incoming dispatch and absence of a reconnect request
+
+The completed-message dispatch in `DataFromDevice` has no sensor-requested
+GTLS restart branch. Category `0x0d`, including command zero, only appends MCU
+bytes and signals the MCU event; it does not initialize GTLS or arm FDT.
+Category 2 invokes raw callback `HAL+0x140`, category 3 invokes FDT callback
+`HAL+0x148`, and category 5 invokes callback `HAL+0x150`. The category-3 dispatch
+does not filter subcommands: profile-9 `FUN_180005b80` handles command three as
+manual and classifies the IRQ for every other command. Categories 8, 9,
+`0x0a`, `0x0e` and `0x0f` publish response stores/events; `0x0b` command zero
+publishes the addressed ACK slot. Category `0x0c` delegates to notice handler
+`FUN_180019264`, which publishes ESD/wake worker events or handles the
+power-button notice. Other categories/subcommands return without a consumer.
+None of these dispatch branches interprets a message as a reconnect request.
+
+The complete client initializer `FUN_180025930` is called only by
+`FUN_180008398`, whose only code caller is `FUN_180007ee0`. That wrapper's
+code callers are the full-init/resume worker `FUN_180020970` at
+`0x180020c49`, `0x180020c6d`, `0x180020e7c` and `0x180020ea4`, and the
+image-error restart thread `FUN_1800210c0` at `0x180021110`. An unsolicited
+bad image can reach the image-error history route described below, but there
+is no category-`0x0d` command-zero reconnect owner.
+
+The current counterpart `device/transport.c:goodix_rx_cell` likewise routes
+category `0x0d` only to the MCU stream and has no reconnect event. Its only
+GTLS restart request is every second image error setting `gtls_restart_pending`.
+`device/scan.c:goodix_scan_event_done` consumes that request through
+`device/session.c:goodix_start_gtls_restart`. Completion
+`goodix_scan_gtls_restarted` returns to waiting without an arm. After a failed
+capture, the capture continuation has already armed down before that wait.
+
 The actual sender path is `FUN_18001c5a0 -> FUN_180018dd8 -> FUN_180018a8c`.
 For GTLS it has response selector `0xff` and no response-event wait. The inner
 sender clears only the category-D/command-1 ACK slot, constructs the protocol
@@ -102,6 +133,19 @@ send stack is live. Neither sender clears the MCU ring. Write failure or exhaust
 ACK polling returns zero to `send_mcu`, which unconditionally sleeps two
 milliseconds and maps zero to `-1`. The send/receive split therefore preserves
 MCU bytes published during ACK polling.
+
+The two-millisecond sleep is at `0x18001c613..0x18001c61b`, before the send
+result test at `0x18001c634`. Linux `device/commands.c:goodix_cmd_mcu_send`
+uses the generic command completion directly, without this post-send delay
+on either success or failure. Its next GTLS receive or attempt-failure
+continuation therefore starts without the native two-millisecond interval.
+
+Neither `send_mcu` nor either underlying sender repeats a failed transaction.
+Both the `0xff01` opening and `0xff03` verification use wire command `0xd2`
+once per client attempt. ACK exhaustion ends that attempt before its next read;
+it does not advance to reading an already retained reply. A later wrapper attempt
+reinitializes the client and generates a new opening rather than resending the
+same command inside the failed attempt.
 
 The two handshake wire messages occupy 44 and 48 meaningful bytes respectively
 inside their 64-byte transfer cells: command, little-endian protocol length,
@@ -140,6 +184,16 @@ reselect/provision the PSK. `deviceInit` may invoke the
 wrapper again after its three attempts fail; only identity error `0x700003`
 causes the intervening production-item cache clear, without clearing the retained
 selected-PSK validity byte.
+
+Neither the direct restart thread nor the initialized resume branch arms FDT
+after its handshake. Capture admission and FDT handler continuations own the
+arms separately. The ordinary profile-9 down handler `FUN_180014e10` arms
+down through `HAL+0xb0(1)` after a valid-base false down or a live-read `-1`,
+and otherwise up through `HAL+0xb0(0)`, including when the live-read gate is
+false. A `+0x70` or manual `+0x160` failure returns before either arm. There is no handshake-completion
+barrier between that arm and the independent reader-launched restart thread.
+See [down handler](usbinterface-FUN_180014e10.md) and
+[resume branch](usbinterface-FUN_180020970.md#resume-branch).
 
 The direct restart is launched by continuous-read completion
 `FUN_180021200`, after `FUN_180017ed8` returns exactly `-1` and error-history
@@ -209,6 +263,27 @@ does not impose that ordering on the controller. Individual command sends share
 the sender lock; the entire FDT handler and restart are not one atomic action.
 See [FDT publication and worker ownership](usbinterface-profile9-fdt-event-loop.md).
 
+### Receive separation during re-establishment
+
+`FUN_18001a7ec` routes admitted packets by outer protocol category, not by GTLS
+establishment state. Category two invokes the raw-image callback when the HAL
+and callback pointers are nonnull; category `0x0d` appends to the MCU ring when
+device-context lookup succeeds. A late encrypted image therefore stays on
+the image path while a new handshake is waiting. It does not become the next
+72-byte identity or twelve-byte completion read. The image decryptor uses the
+currently installed keys and receive counter, authenticates before advancing the
+counter, and requires state five before producing post-GEA output; see
+[authenticated sensor replies](usbinterface-FUN_180024940.md).
+
+The per-attempt ring-index clear in `FUN_180007ee0` discards already retained MCU
+bytes, not future USB input. It neither drains the physical receive stream nor
+clears protocol partial assembly. New category-D publications remain eligible
+for the handshake reader without an attempt-generation tag. The current source
+preserves this separation in `device/transport.c:goodix_rx_cell`, and starts each
+attempt with `goodix_transport_reset_mcu` and `goodix_crypto_gtls_init`.
+`goodix_transport_reset_mcu` clears the MCU stream and retained reply, not the
+partial protocol assembly in `self->rx`.
+
 ## Server identity and key publication
 
 `FUN_180026490` requests exactly 72 bytes. It requires a positive count of 72,
@@ -250,6 +325,13 @@ published. The next complete initialization clears these retained values.
 The comparison result is tested at `0x1800267c4`; the state-four store is at
 `0x180026874`.
 
+This client handshake has no TLS-PSK identity string or `Client_identity`
+selection callback. Its identity admission is the 32-byte random-bound HMAC
+comparison above, preceded by the exact `0xff02` type and 72-byte length checks.
+The current owner of those steps is
+`device/session.c:goodix_gtls_ssm_handler`, with the HMAC comparison in
+`device/crypto.c:goodix_crypto_gtls_verify_identity`.
+
 ## Initialization and re-establishment ownership
 
 `FUN_180008398` supplies the selected PSK to `FUN_180025930`, with role one and
@@ -274,7 +356,14 @@ length 32, without a production read or write. When zero it first calls
 `FUN_180008560` and propagates initialization failure. `FUN_180008398` requests
 the PSK into a 1024-byte local buffer before clearing the GTLS context. Thus
 the established-session restart boundary retains the selected PSK and its
-validity independently of every attempt's session-key/context reset. The
+validity independently of every attempt's session-key/context reset.
+`FUN_180008560` owns both direct writes to selected-valid byte `0x1800607bc`:
+zero at `0x1800085b5` on initialization entry and one at `0x18000870e` after
+successful check or provisioning. ACK parsing, CONFIG publication, D0 resume
+and failed-image restart do not invalidate that byte. Its zero entry attempts
+`production_psk_check` up to three times, then `production_psk_gen_write_check`
+up to three times only if every check failed. This is credential initialization,
+not a pending power-loss refresh cycle. The
 current counterpart at this boundary is `device/session.c:goodix_gtls_ssm_handler`
 passing retained `self->psk` to `goodix_crypto_gtls_init`; initial selection is
 owned by `goodix_load_psk`, called by `GOODIX_OPEN_PARSE_OTP` on each cold open
@@ -290,6 +379,14 @@ one only for zero handshake return. Each failed attempt sleeps ten milliseconds,
 including the last. Its secondary in-progress loop allows five calls, with
 five-millisecond sleeps only before another call. Invalid null ring or completion
 pointer returns `-0x100001` without attempting initialization.
+
+The five-call guard counts returns from the complete handshake wrapper
+`FUN_18000823c`, not empty receive polls. Inside each call, `FUN_180025230`
+repeats client steps while their absolute status is `0x400401`, with no numeric
+step bound. The identity and completion steps each invoke one 2000-ms receive;
+receive timeout returns `-258` and ends the attempt, rather than consuming a
+step and continuing with empty input. The transport response-event polling in
+`FUN_180018dd8` is a separate 50-ms loop and is not the GTLS receive callback.
 
 Send and read failures belong to this wrapper's attempt, not to a deferred
 device-initialization request. The return from each new handshake replaces the
