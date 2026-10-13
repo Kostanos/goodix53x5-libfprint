@@ -218,7 +218,9 @@ goodix_gm168sec_check_firmware (const char *firmware)
 }
 
 /* The vendor's MCU context waits 1500 ms for every ACK and every reply;
- * EC control alone gives its ACK 500 ms. */
+ * EC control alone gives its ACK 500 ms. Dell's TOD driver never enables
+ * the IoHub retry for this MCU, so every command goes out once; the Windows
+ * driver would resend once after a timeout. */
 static gboolean
 goodix_wrapped_command_budget (guint8 command, gboolean expect_data,
                               guint *ack_ms, guint *response_ms)
@@ -226,7 +228,7 @@ goodix_wrapped_command_budget (guint8 command, gboolean expect_data,
   (void) expect_data;
   *ack_ms = command == 0xae ? 500 : 1500;
   *response_ms = 1500;
-  return TRUE;
+  return FALSE;
 }
 
 static gboolean
