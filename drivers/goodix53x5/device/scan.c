@@ -293,9 +293,9 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
       return;
     }
   /* Only a reconnect the sensor asked for arms afterwards, as the vendor's
-   * handler does. A restart after a failed image read only restarts the
-   * channel: the capture's failure path arms after it. */
-  if (FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested && !data->stop_requested)
+   * handler does, even while the scan stops. A restart after a failed image
+   * read only restarts the channel: the capture's failure path arms after it. */
+  if (FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested)
     {
       data->dispatching = TRUE;
       fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_CHANNEL_REARM);
