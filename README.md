@@ -18,9 +18,11 @@ binaries at runtime.
 ## Supported Hardware
 
 The project is currently validated on a **Dell XPS 13 9305** with a
-`27c6:5335` sensor. IDs `27c6:5385` and `27c6:5395` are registered by the driver
-but have not received the same hardware validation. Check your sensor's ID with
-`lsusb -d 27c6:`.
+`27c6:5335` sensor. The **Dell XPS 15 7590** with a `27c6:5395` sensor is also
+[reported working](https://github.com/seaweeduk/goodix53x5-libfprint/issues/336).
+
+ID `27c6:5385` is also registered by the driver but has not received the same
+hardware validation. Check your sensor's ID with `lsusb -d 27c6:`.
 
 Before installing on an unlisted Goodix USB device, run:
 
@@ -112,8 +114,7 @@ Each [release](https://github.com/seaweeduk/goodix53x5-libfprint/releases)
 has one x86-64 package for each of Ubuntu 22.04, 24.04 and 26.04, Debian 12
 and 13, and Fedora 43 and 44; the release notes link each one directly.
 Distributions based on one of these may work with the package for their base
-release, but they are not tested. Download the package for your distribution
-and install it:
+release. Download the package for your distribution and install it:
 
 ```sh
 sudo apt install ./fprintd-goodix53x5_*.deb      # Ubuntu and Debian
@@ -210,8 +211,8 @@ default path. See the [Windows dual-boot migration guide](WINDOWS-DUAL-BOOT.md).
 
 - This is an experimental, out-of-tree driver tied to pinned libfprint and
   fprintd revisions.
-- Hardware validation currently covers only the Dell XPS 13 9305 with the
-  `27c6:5335` sensor.
+- Project hardware validation currently covers only the Dell XPS 13 9305 with
+  the `27c6:5335` sensor.
 - Fingerprint images and matching are handled on the host. This is not a
   match-on-chip or secure-element design.
 - A plaintext imported GTLS key is protected by filesystem permissions, not a
